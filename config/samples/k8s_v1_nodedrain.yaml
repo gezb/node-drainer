@@ -1,0 +1,9 @@
+apiVersion: k8s.gezb.co.uk/v1
+kind: NodeDrain
+metadata:
+  labels:
+    app.kubernetes.io/name: node-drainer
+    app.kubernetes.io/managed-by: kustomize
+  name: nodedrain-sample
+spec:
+  nodeName: kind-worker2

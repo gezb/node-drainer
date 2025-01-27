@@ -1,0 +1,9 @@
+apiVersion: k8s.gezb.co.uk/v1
+kind: DrainCheck
+metadata:
+  labels:
+    app.kubernetes.io/name: node-drainer
+    app.kubernetes.io/managed-by: kustomize
+  name: draincheck-sample
+spec:
+  podregex: ^blocking-.*
