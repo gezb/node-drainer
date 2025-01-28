@@ -12,9 +12,18 @@ spec:
     listKind: NodeDrainList
     plural: nodedrains
     singular: nodedrain
-  scope: Cluster
+  scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - description: Phase of the NodeDrain
+      jsonPath: .status.phase
+      name: Phase
+      type: string
+    - description: Pods that are blocking drain
+      jsonPath: .status.podsblockingdrain
+      name: Pods BlockingDrain
+      type: string
+    name: v1
     schema:
       openAPIV3Schema:
         description: NodeDrain is the Schema for the nodedrains API.
@@ -39,13 +48,47 @@ spec:
           spec:
             description: NodeDrainSpec defines the desired state of NodeDrain.
             properties:
-              foo:
-                description: Foo is an example field of NodeDrain. Edit nodedrain_types.go
-                  to remove/update
+              nodeName:
                 type: string
+            required:
+            - nodeName
             type: object
           status:
             description: NodeDrainStatus defines the observed state of NodeDrain.
+            properties:
+              drainProgress:
+                description: Percentage completion of draining the node
+                type: integer
+              evictionPods:
+                description: EvictionPods is the total number of pods up for eviction
+                  from the start
+                type: integer
+              lastError:
+                description: LastError represents the latest error if any in the latest
+                  reconciliation
+                type: string
+              lastUpdate:
+                description: The last time the status has been updated
+                format: date-time
+                type: string
+              pendingpods:
+                description: PendingPods is a list of pending pods for eviction
+                items:
+                  type: string
+                type: array
+              phase:
+                description: Phase represents the progress of this nodeDrain
+                type: string
+              podsblockingdrain:
+                description: PodsBlockingDrain is a list of pods that are blocking
+                  the draining of this node
+                type: string
+              totalpods:
+                description: TotalPods is the total number of all pods on the node
+                  from the start
+                type: integer
+            required:
+            - phase
             type: object
         type: object
     served: true
