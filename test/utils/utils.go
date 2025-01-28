@@ -233,3 +233,20 @@ func UncommentCode(filename, target, prefix string) error {
 	// nolint:gosec
 	return os.WriteFile(filename, out.Bytes(), 0644)
 }
+
+// CreateTempFile creates a temporary file containing the given content
+func CreateTempFile(content string) (string, error) {
+	tmpFile, err := os.CreateTemp("", "k8syaml")
+	if err != nil {
+		return "", err
+	}
+	if _, err = tmpFile.WriteString(content); err != nil {
+		return "", err
+	}
+	err = tmpFile.Close()
+	if err != nil {
+		return "", err
+	}
+
+	return tmpFile.Name(), nil
+}

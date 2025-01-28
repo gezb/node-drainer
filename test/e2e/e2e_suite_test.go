@@ -18,8 +18,9 @@ var (
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
 	// These variables are useful if Prometheus or CertManager is already installed, avoiding
 	// re-installation and conflicts.
-	skipPrometheusInstall  = os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true"
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
+	skipPrometheusInstall = os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true"
+	// skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
+	skipCertManagerInstall = true
 	// isPrometheusOperatorAlreadyInstalled will be set true when prometheus CRDs be found on the cluster
 	isPrometheusOperatorAlreadyInstalled = false
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
@@ -27,7 +28,7 @@ var (
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
-	projectImage = "example.com/node-drainer:v0.0.1"
+	projectImage = "node-drain-controller:e2e-tests"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
