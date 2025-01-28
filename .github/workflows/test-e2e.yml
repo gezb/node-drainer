@@ -26,8 +26,10 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
-      - name: Run Mage
-        uses: magefile/mage-action@v3
-        with:
-          version: latest
-          args: teste2e
+      - name: Create kind cluster
+        run: kind create cluster
+
+      - name: Running Test e2e
+        run: |
+          go mod tidy
+          make test-e2e
