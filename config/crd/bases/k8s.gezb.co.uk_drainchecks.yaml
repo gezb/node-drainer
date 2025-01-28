@@ -39,9 +39,9 @@ spec:
           spec:
             description: DrainCheckSpec defines the desired state of DrainCheck.
             properties:
-              foo:
-                description: Foo is an example field of DrainCheck. Edit draincheck_types.go
-                  to remove/update
+              podRegex:
+                description: PodRegex is a regex that matches pods that should block
+                  the draining of nodes
                 type: string
             type: object
           status:
