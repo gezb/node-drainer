@@ -187,8 +187,10 @@ func main() {
 	}
 
 	if err = (&controller.NodeDrainReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		MgrConfig: mgr.GetConfig(),
+		Recorder:  mgr.GetEventRecorderFor("node-drain-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeDrain")
 		os.Exit(1)

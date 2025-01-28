@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -26,6 +27,15 @@ const metricsServiceName = "node-drainer-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "node-drainer-metrics-binding"
 
+// k8sRole is the role of the node reserved for drain testing
+const k8sRole = "draintest"
+
+// worker2Node is the name of the node reserved for drain testing
+const worker2Node = "kind-worker2"
+
+// worker3Node is the name of the node reserved for further testing
+const worker3Node = "kind-worker3"
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -44,6 +54,22 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
+		By("Labeling and cordening the test nodes so only our workloads run on them")
+		// worker2
+		cmd = exec.Command("kubectl", "label", "node", worker2Node, "role="+k8sRole)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label node "+worker2Node)
+		cmd = exec.Command("kubectl", "cordon", worker2Node)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to corden "+worker2Node)
+		// worker 3
+		cmd = exec.Command("kubectl", "label", "node", worker3Node, "role="+k8sRole)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label node "+worker3Node)
+		cmd = exec.Command("kubectl", "cordon", worker3Node)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to corden node"+worker3Node)
+
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
 		_, err = utils.Run(cmd)
@@ -53,69 +79,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-	})
-
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
-	AfterAll(func() {
-		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
-	AfterEach(func() {
-		specReport := CurrentSpecReport()
-		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
-			}
-
-			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
-			eventsOutput, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
-			}
-
-			By("Fetching curl-metrics logs")
-			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
-			}
-
-			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
-			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
-			} else {
-				fmt.Println("Failed to describe controller pod")
-			}
-		}
 	})
 
 	SetDefaultEventuallyTimeout(2 * time.Minute)
@@ -243,20 +206,219 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(metricsOutput).To(ContainSubstring(
 				"controller_runtime_reconcile_total",
 			))
+
+			By("deleting the curl-metrics pod")
+			cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete curl-metrics pod")
+
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should drain a node when there are no pods blocking the drain", func() {
+
+			By("Uncordening our test node")
+			cmd := exec.Command("kubectl", "uncordon", worker2Node)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to uncorden node")
+
+			By("Verifying the number of pods on the node is 2")
+			expectNumberOfPodsRunning(2)
+
+			createStatefulSetWithName("nginx")
+			createStatefulSetWithName("blocking")
+
+			By("Waiting for all pods to be running")
+
+			expectNumberOfPodsRunning(4)
+
+			By("Creating a nodeDrain for our node")
+			nodeDrain := fmt.Sprintf(`
+apiVersion: k8s.gezb.co.uk/v1
+kind: NodeDrain
+metadata:
+  name: nodedrain-sample
+spec:
+  nodeName: %s
+`, worker2Node)
+			nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+			cmd = exec.Command("kubectl", "apply", "-f", nodeDrainFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+
+			By("Waiting for all pods to be removed")
+			expectNumberOfPodsRunning(2)
+
+			cmd = exec.Command("kubectl", "delete", "-f", nodeDrainFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+			err = os.Remove(nodeDrainFile)
+			Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+
+			By(" Deleting test statefulsets")
+			cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
+			cmd = exec.Command("kubectl", "delete", "statefulset", "blocking")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete blocking statefulset")
+
+		})
+
+		It("drain should be blocked by a DrainCheck until pods matching the regex are deleted", func() {
+
+			By("Uncordening our test node")
+			cmd := exec.Command("kubectl", "uncordon", worker2Node)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to uncorden node")
+
+			By("Verifying the number of pods on the node is 2")
+
+			expectNumberOfPodsRunning(2)
+
+			createStatefulSetWithName("nginx")
+			createStatefulSetWithName("blocking")
+
+			By("Waiting for all pods to be running")
+			expectNumberOfPodsRunning(4)
+
+			By("creating a DrainCheck for `blocking-.` pods")
+
+			drainCheck := `
+apiVersion: k8s.gezb.co.uk/v1
+kind: DrainCheck
+metadata:
+  name: draincheck-sample
+  #namespace: %s
+spec:
+  podRegex: ^blocking-.*
+`
+			drainCheckFile, err := utils.CreateTempFile(drainCheck)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply "+drainCheckFile)
+
+			cmd = exec.Command("kubectl", "apply", "-f", drainCheckFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply DrainCheck")
+
+			By("Creating a nodeDrain for our node")
+			nodeDrain := fmt.Sprintf(`
+apiVersion: k8s.gezb.co.uk/v1
+kind: NodeDrain
+metadata:
+  name: nodedrain-sample
+spec:
+  nodeName: %s	
+`, worker2Node)
+
+			nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+			cmd = exec.Command("kubectl", "apply", "-f", nodeDrainFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+
+			By("Checking we still have all pods running")
+			expectNumberOfPodsRunning(4)
+
+			nodedrainIsPhaseCordened := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("nodedrain-sample   Cordoned"),
+					"coredened NodeDrain not found")
+			}
+			Eventually(nodedrainIsPhaseCordened, 5*time.Minute).Should(Succeed())
+
+			By("Deleting the blocking statefulsets")
+			cmd = exec.Command("kubectl", "delete", "statefulset", "blocking")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+
+			By("Drain should run and we should be left with only deamonsets")
+			expectNumberOfPodsRunning(2)
+
+			By(" Deleting nginx statefulsets")
+			cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
+
+			By("deleting the NpdeDrain")
+			cmd = exec.Command("kubectl", "delete", "-f", nodeDrainFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+			err = os.Remove(nodeDrainFile)
+			Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+
+			By("removing the drainCheck")
+			cmd = exec.Command("kubectl", "delete", "-f", drainCheckFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed remove drainCheck")
+			err = os.Remove(drainCheckFile)
+			Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+		})
 	})
+
+	// label and corden worker3  - should get stuck on cordon, till wo corden the npde
+	// It("if another node with the same 'role' & version exists uncodened should hold until it is", func() {
+	// })
 })
+
+func expectNumberOfPodsRunning(expected int) {
+	verifyAllPodsRunning := func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "pods",
+			"-o", "wide",
+			"--field-selector", "spec.nodeName="+worker2Node,
+			"-A")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		lines := strings.Split(output, "\n")
+		lines = lines[:len(lines)-1] // remove the empty last line
+		lines = lines[1:]            // remove header
+		for _, line := range lines {
+			g.Expect(line).To(ContainSubstring("Running"))
+		}
+		g.Expect(lines).To(HaveLen(expected))
+	}
+	EventuallyWithOffset(-1, verifyAllPodsRunning, 3*time.Minute).Should(Succeed())
+}
+
+func createStatefulSetWithName(name string) {
+	By("starting StatefulSet with name " + name)
+	inflate := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{.metadata.name}}
+spec:
+  selector:
+    matchLabels:
+      app: {{.metadata.name}}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: {{.metadata.name}}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: {{.metadata.name}}
+        image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+        role: %s
+`, k8sRole)
+	inflate = strings.Replace(inflate, "{{.metadata.name}}", name, -1)
+	inflateFile, err := utils.CreateTempFile(inflate)
+	Expect(err).NotTo(HaveOccurred(), "Failed apply "+name)
+	cmd := exec.Command("kubectl", "apply", "-f", inflateFile)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed apply "+name)
+	err = os.Remove(inflateFile)
+	Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+
+}
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request

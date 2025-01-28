@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -24,11 +27,13 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	ctx       context.Context
-	cancel    context.CancelFunc
-	testEnv   *envtest.Environment
-	cfg       *rest.Config
-	k8sClient client.Client
+	ctx          context.Context
+	cancel       context.CancelFunc
+	testEnv      *envtest.Environment
+	cfg          *rest.Config
+	k8sClient    client.Client
+	fakeRecorder *record.FakeRecorder
+	r            *NodeDrainReconciler
 )
 
 func TestControllers(t *testing.T) {
@@ -64,9 +69,31 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
+	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme.Scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sManager).NotTo(BeNil())
+
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	fakeRecorder = record.NewFakeRecorder(20)
+	r = &NodeDrainReconciler{
+		Client:    k8sClient,
+		Scheme:    scheme.Scheme,
+		MgrConfig: k8sManager.GetConfig(),
+		logger:    ctrl.Log.WithName("unit test"),
+		Recorder:  fakeRecorder,
+	}
+	ctx, cancel = context.WithCancel(ctrl.SetupSignalHandler())
+
+	err = r.SetupWithManager(k8sManager)
+	Expect(err).NotTo(HaveOccurred())
+
+	go func() {
+		// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
+		Expect(k8sManager.Start(ctx)).To(Succeed())
+	}()
 })
 
 var _ = AfterSuite(func() {
