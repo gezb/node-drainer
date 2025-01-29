@@ -325,7 +325,7 @@ spec:
 				cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("nodedrain-sample   Cordoned"),
+				g.Expect(output).To(ContainSubstring("nodedrain-sample   PodsBlockingDrain"),
 					"coredened NodeDrain not found")
 			}
 			Eventually(nodedrainIsPhaseCordened, 5*time.Minute).Should(Succeed())

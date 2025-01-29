@@ -10,11 +10,13 @@ const (
 	// NodeDrainFinalizer is a finalizer for a NodeMaintenance CR deletion
 	NodeDrainFinalizer string = "co.uk.gezb,NodeDrain"
 
-	NodeDrainPhasePending   NodeDrainPhase = "Pending"
-	NodeDrainPhaseCordoned  NodeDrainPhase = "Cordoned"
-	NodeDrainPhaseDraining  NodeDrainPhase = "Draining"
-	NodeDrainPhaseCompleted NodeDrainPhase = "Completed"
-	NodeDrainPhaseFailed    NodeDrainPhase = "Failed"
+	NodeDrainPhasePending      NodeDrainPhase = "Pending"
+	NodeDrainPhaseCordoned     NodeDrainPhase = "Cordoned"
+	NodeDrainPhaseDraining     NodeDrainPhase = "Draining"
+	NodeDrainPhaseCompleted    NodeDrainPhase = "Completed"
+	NodeDrainPhasePodsBlocking NodeDrainPhase = "PodsBlockingDrain"
+
+	NodeDrainPhaseFailed NodeDrainPhase = "Failed"
 )
 
 // NodeDrainSpec defines the desired state of NodeDrain.
