@@ -10,18 +10,23 @@ const (
 	// NodeDrainFinalizer is a finalizer for a NodeMaintenance CR deletion
 	NodeDrainFinalizer string = "co.uk.gezb,NodeDrain"
 
-	NodeDrainPhasePending      NodeDrainPhase = "Pending"
-	NodeDrainPhaseCordoned     NodeDrainPhase = "Cordoned"
-	NodeDrainPhaseDraining     NodeDrainPhase = "Draining"
-	NodeDrainPhaseCompleted    NodeDrainPhase = "Completed"
-	NodeDrainPhasePodsBlocking NodeDrainPhase = "PodsBlockingDrain"
-
-	NodeDrainPhaseFailed NodeDrainPhase = "Failed"
+	NodeDrainPhasePending               NodeDrainPhase = "Pending"
+	NodeDrainPhaseCordoned              NodeDrainPhase = "Cordoned"
+	NodeDrainPhaseDraining              NodeDrainPhase = "Draining"
+	NodeDrainPhaseCompleted             NodeDrainPhase = "Completed"
+	NodeDrainPhasePodsBlocking          NodeDrainPhase = "PodsBlockingDrain"
+	NodeDrainPhaseOtherNodesNotCordoned NodeDrainPhase = "OtherNodesNotCordoned"
+	NodeDrainPhaseFailed                NodeDrainPhase = "Failed"
 )
 
 // NodeDrainSpec defines the desired state of NodeDrain.
 type NodeDrainSpec struct {
+	// The name of the node to drian
 	NodeName string `json:"nodeName"`
+	// Stop the controller cordening the node
+	SkipCordon bool `json:"skipCordon"`
+	// Ignore different kubelet versions when considering if a node group is empty
+	IgnoreVersion bool `json:"ignoreVersion"`
 }
 
 // NodeDrainStatus defines the observed state of NodeDrain.

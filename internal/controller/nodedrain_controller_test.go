@@ -43,7 +43,7 @@ var _ = Describe("Node Drain", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, node)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -76,7 +76,7 @@ var _ = Describe("Node Drain", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, node)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -119,7 +119,7 @@ var _ = Describe("Node Drain", func() {
 			// this will be done by the drain
 			// DeferCleanup(k8sClient.Delete, ctx, pod1)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -174,7 +174,7 @@ var _ = Describe("Node Drain", func() {
 			// this will be done later in the test to complete the drain
 			DeferCleanup(k8sClient.Delete, ctx, drainCheck)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -244,7 +244,7 @@ var _ = Describe("Node Drain", func() {
 	When("Drain does not run if another node for the same role & version has not been cordened ", func() {
 		var node2 *corev1.Node
 		BeforeEach(func() {
-			node := getTestNode("node1", false)
+			node := getTestNode("node1", true)
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, node)
 			node2 = getTestNode("uncodened-node", false)
@@ -256,20 +256,19 @@ var _ = Describe("Node Drain", func() {
 			// this will be done by the drain
 			// DeferCleanup(k8sClient.Delete, ctx, pod1)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(true)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
-		It("should stop at corendned when another node is not cordened", func() {
+		It("should stop at OtherNodesNotCordoned when another node is not cordened", func() {
 			nodeDrain := &gezbcoukalphav1.NodeDrain{}
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCordoned))
+				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned))
 			}, timeout, interval).Should(Succeed())
 			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
 			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
+			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(1))
@@ -318,7 +317,7 @@ var _ = Describe("Node Drain", func() {
 			// this will be done by the drain
 			// DeferCleanup(k8sClient.Delete, ctx, pod1)
 
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -348,7 +347,7 @@ var _ = Describe("Node Drain", func() {
 
 	When("NodeDrain CR for a node that does not exist", func() {
 		BeforeEach(func() {
-			nd = getTestNodeDrain()
+			nd = getTestNodeDrain(false)
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())
 			DeferCleanup(k8sClient.Delete, ctx, nd)
 		})
@@ -393,14 +392,15 @@ func getTestPod(podName string) *corev1.Pod {
 	}
 }
 
-func getTestNodeDrain() *gezbcoukalphav1.NodeDrain {
+func getTestNodeDrain(skipCordon bool) *gezbcoukalphav1.NodeDrain {
 	return &gezbcoukalphav1.NodeDrain{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "node-drain",
 			Namespace: testNamespace,
 		},
 		Spec: gezbcoukalphav1.NodeDrainSpec{
-			NodeName: "node1",
+			NodeName:   "node1",
+			SkipCordon: skipCordon,
 		},
 	}
 }

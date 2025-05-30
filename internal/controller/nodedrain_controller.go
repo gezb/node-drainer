@@ -129,6 +129,8 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhasePodsBlocking:
 		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
+	case gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned:
+		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseDraining:
 		needUpdate = true
 		drainError, err = r.reconcileDraining(drainer, nodeDrain)
@@ -173,15 +175,18 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		}
 	}
 
-	if !node.Spec.Unschedulable {
-		// cordon node
-		r.logger.Info("Cordoning node", "node", nodeName)
-		if err = drain.RunCordonOrUncordon(drainer, node, true); err != nil {
-			return false, err
+	if nodeDrain.Spec.SkipCordon {
+		r.logger.Info("NOT Cordoning node", "node", nodeName)
+	} else {
+		if !node.Spec.Unschedulable {
+			// cordon node
+			r.logger.Info("Cordoning node", "node", nodeName)
+			if err = drain.RunCordonOrUncordon(drainer, node, true); err != nil {
+				return false, err
+			}
+			utils.NormalEvent(r.Recorder, nodeDrain, EventReasonNodeCordoned, fmt.Sprintf("Node %s cordoned", nodeName))
 		}
-		utils.NormalEvent(r.Recorder, nodeDrain, EventReasonNodeCordoned, fmt.Sprintf("Node %s cordoned", nodeName))
 	}
-
 	podlist, err := drainer.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx,
 		metav1.ListOptions{
 			FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeDrain.Spec.NodeName}).String(),
@@ -229,11 +234,13 @@ func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *dr
 	kubeletVersion := node.Status.NodeInfo.KubeletVersion
 	nodeRole := node.Labels["role"]
 
-	allNodesCodened, err := r.areAllNodesCordened(ctx, kubeletVersion, nodeRole)
+	allNodesCordened, err := r.areAllNodesCordened(ctx, nodeDrain.Spec.IgnoreVersion, kubeletVersion, nodeRole)
 	if err != nil {
 		return true, false, err
 	}
-	if !allNodesCodened {
+	if !allNodesCordened {
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
+		// requeue this request so we check when the blocking pod(s) have been removed
 		return true, true, nil
 	}
 	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseDraining)
@@ -252,10 +259,12 @@ func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *ge
 		pattern := regexp.MustCompile(drainCheck.Spec.PodRegex)
 		for _, podName := range nodeDrain.Status.PendingPods {
 			if pattern.MatchString(podName) {
-				// record this in status the first time
+				blockingMessage := fmt.Sprintf("Node %s is blocked from draining by pod: %s", nodeDrain.Spec.NodeName, podName)
+				r.logger.Info(blockingMessage)
+				// record this in events the first time
 				if !slices.Contains(strings.Split(nodeDrain.Status.PodsBlockingDrain, ","), podName) {
 					utils.WarningEvent(r.Recorder, nodeDrain, EventReasonDrainBlockedByPods,
-						fmt.Sprintf("Node %s is blocked from draining by pod: %s", nodeDrain.Spec.NodeName, podName))
+						blockingMessage)
 				}
 				r.logger.Info(fmt.Sprintf("Node %s is blocked from draining by pod: %s", nodeDrain.Spec.NodeName, podName))
 				podsBlocking = append(podsBlocking, podName)
@@ -302,7 +311,7 @@ func (r *NodeDrainReconciler) fetchNode(ctx context.Context, drainer *drain.Help
 	return node, nil
 }
 
-func (r *NodeDrainReconciler) areAllNodesCordened(ctx context.Context, kubeletVersion string, nodeRole string) (bool, error) {
+func (r *NodeDrainReconciler) areAllNodesCordened(ctx context.Context, ignoreVersion bool, kubeletVersion string, nodeRole string) (bool, error) {
 	nodeList := &corev1.NodeList{}
 	err := r.Client.List(ctx, nodeList, &client.ListOptions{})
 	if err != nil {
@@ -311,7 +320,7 @@ func (r *NodeDrainReconciler) areAllNodesCordened(ctx context.Context, kubeletVe
 	unschedulable := true
 	for _, node := range nodeList.Items {
 		if node.Labels["role"] == nodeRole &&
-			node.Status.NodeInfo.KubeletVersion == kubeletVersion {
+			(ignoreVersion || (node.Status.NodeInfo.KubeletVersion == kubeletVersion)) {
 			if !node.Spec.Unschedulable {
 				unschedulable = false
 			}

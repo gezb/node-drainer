@@ -223,15 +223,15 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to uncorden node")
 
-			By("Verifying the number of pods on the node is 2")
-			expectNumberOfPodsRunning(2)
+			By("Verifying the number of pods on the node is 4")
+			expectNumberOfPodsRunning(4) // two nodes
 
 			createStatefulSetWithName("nginx")
 			createStatefulSetWithName("blocking")
 
 			By("Waiting for all pods to be running")
 
-			expectNumberOfPodsRunning(4)
+			expectNumberOfPodsRunning(6)
 
 			By("Creating a nodeDrain for our node")
 			nodeDrain := fmt.Sprintf(`
@@ -241,6 +241,8 @@ metadata:
   name: nodedrain-sample
 spec:
   nodeName: %s
+  ignoreVersion: true
+  skipCordon: false
 `, worker2Node)
 			nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
 			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
@@ -249,7 +251,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
 
 			By("Waiting for all pods to be removed")
-			expectNumberOfPodsRunning(2)
+			expectNumberOfPodsRunning(4)
 
 			cmd = exec.Command("kubectl", "delete", "-f", nodeDrainFile)
 			_, err = utils.Run(cmd)
@@ -276,13 +278,13 @@ spec:
 
 			By("Verifying the number of pods on the node is 2")
 
-			expectNumberOfPodsRunning(2)
+			expectNumberOfPodsRunning(4)
 
 			createStatefulSetWithName("nginx")
 			createStatefulSetWithName("blocking")
 
 			By("Waiting for all pods to be running")
-			expectNumberOfPodsRunning(4)
+			expectNumberOfPodsRunning(6)
 
 			By("creating a DrainCheck for `blocking-.` pods")
 
@@ -309,7 +311,9 @@ kind: NodeDrain
 metadata:
   name: nodedrain-sample
 spec:
-  nodeName: %s	
+  nodeName: %s
+  ignoreVersion: true
+  skipCordon: false
 `, worker2Node)
 
 			nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
@@ -319,7 +323,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
 
 			By("Checking we still have all pods running")
-			expectNumberOfPodsRunning(4)
+			expectNumberOfPodsRunning(6)
 
 			nodedrainIsPhaseCordened := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
@@ -336,7 +340,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
 
 			By("Drain should run and we should be left with only deamonsets")
-			expectNumberOfPodsRunning(2)
+			expectNumberOfPodsRunning(4)
 
 			By(" Deleting nginx statefulsets")
 			cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
@@ -359,26 +363,105 @@ spec:
 		})
 	})
 
-	// label and corden worker3  - should get stuck on cordon, till wo corden the npde
-	// It("if another node with the same 'role' & version exists uncodened should hold until it is", func() {
-	// })
+	// label and corden worker3  - should get stuck on cordon, till wo corden the node
+	It("if another node with the same 'role' & version exists uncodened should hold until it is cordened", func() {
+
+		By("Uncordening our test node")
+		cmd := exec.Command("kubectl", "uncordon", worker2Node)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to uncorden node")
+
+		cmd = exec.Command("kubectl", "uncordon", worker3Node)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to uncorden node")
+
+		By("Verifying the number of pods on the node is 2")
+
+		expectNumberOfPodsRunning(4)
+
+		createStatefulSetWithName("nginx")
+
+		By("Waiting for all pods to be running")
+		expectNumberOfPodsRunning(5)
+
+		By("Creating a nodeDrain for our node")
+		nodeDrain := fmt.Sprintf(`
+apiVersion: k8s.gezb.co.uk/v1
+kind: NodeDrain
+metadata:
+  name: nodedrain-sample
+spec:
+  nodeName: %s
+  ignoreVersion: true
+  skipCordon: true # manually cordening nodes
+   
+`, worker2Node)
+
+		nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
+		Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+		cmd = exec.Command("kubectl", "apply", "-f", nodeDrainFile)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed apply nodeDrain")
+
+		nodedrainIsPhaseCordened := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("nodedrain-sample   OtherNodesNotCordoned"),
+				"coredened NodeDrain not found")
+		}
+		Eventually(nodedrainIsPhaseCordened, 5*time.Minute).Should(Succeed())
+
+		By("Cordening worker3")
+		cmd = exec.Command("kubectl", "cordon", worker3Node)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+
+		By(" Deleting nginx statefulsets")
+		cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
+
+		By("Drain should run and we should be left with only deamonsets")
+		expectNumberOfPodsRunning(4)
+
+		By("deleting the NodeDrain")
+		cmd = exec.Command("kubectl", "delete", "-f", nodeDrainFile)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+		err = os.Remove(nodeDrainFile)
+		Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+	})
 })
 
 func expectNumberOfPodsRunning(expected int) {
+	var worker2, worker3 []string
 	verifyAllPodsRunning := func(g Gomega) {
 		cmd := exec.Command("kubectl", "get", "pods",
 			"-o", "wide",
-			"--field-selector", "spec.nodeName="+worker2Node,
-			"-A")
+			"-A",
+			"--field-selector", "spec.nodeName="+worker2Node)
 		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred())
-		lines := strings.Split(output, "\n")
-		lines = lines[:len(lines)-1] // remove the empty last line
-		lines = lines[1:]            // remove header
-		for _, line := range lines {
+		worker2 = strings.Split(output, "\n")
+		worker2 = worker2[:len(worker2)-1] // remove the empty last line
+		worker2 = worker2[1:]              // remove header
+		for _, line := range worker2 {
 			g.Expect(line).To(ContainSubstring("Running"))
 		}
-		g.Expect(lines).To(HaveLen(expected))
+		cmd = exec.Command("kubectl", "get", "pods",
+			"-o", "wide",
+			"-A",
+			"--field-selector", "spec.nodeName="+worker3Node)
+		output, err = utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		worker3 = strings.Split(output, "\n")
+		worker3 = worker3[:len(worker3)-1] // remove the empty last line
+		worker3 = worker3[1:]              // remove header
+		for _, line := range worker3 {
+			g.Expect(line).To(ContainSubstring("Running"))
+		}
+		g.Expect(len(worker2) + len(worker3)).To(Equal(expected))
 	}
 	EventuallyWithOffset(-1, verifyAllPodsRunning, 3*time.Minute).Should(Succeed())
 }
