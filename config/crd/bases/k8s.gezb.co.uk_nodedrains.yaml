@@ -48,10 +48,20 @@ spec:
           spec:
             description: NodeDrainSpec defines the desired state of NodeDrain.
             properties:
+              ignoreVersion:
+                description: Ignore different kubelet versions when considering if
+                  a node group is empty
+                type: boolean
               nodeName:
+                description: The name of the node to drian
                 type: string
+              skipCordon:
+                description: Stop the controller cordening the node
+                type: boolean
             required:
+            - ignoreVersion
             - nodeName
+            - skipCordon
             type: object
           status:
             description: NodeDrainStatus defines the observed state of NodeDrain.
