@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
+	. "github.com/onsi/gomega"
 )
 
 const (
@@ -249,4 +250,22 @@ func CreateTempFile(content string) (string, error) {
 	}
 
 	return tmpFile.Name(), nil
+}
+
+func LabelNode(nodeName string, role string) {
+	cmd := exec.Command("kubectl", "label", "node", nodeName, "role="+role)
+	_, err := Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label node "+role)
+}
+
+func CordonNode(nodeName string) {
+	cmd := exec.Command("kubectl", "cordon", nodeName)
+	_, err := Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to corden "+nodeName)
+}
+
+func UncordonNode(nodeName string) {
+	cmd := exec.Command("kubectl", "uncordon", nodeName)
+	_, err := Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to corden "+nodeName)
 }

@@ -16,16 +16,27 @@ const (
 	NodeDrainPhaseCompleted             NodeDrainPhase = "Completed"
 	NodeDrainPhasePodsBlocking          NodeDrainPhase = "PodsBlockingDrain"
 	NodeDrainPhaseOtherNodesNotCordoned NodeDrainPhase = "OtherNodesNotCordoned"
+	NodeDrainPhaseWaitForPodsToRestart  NodeDrainPhase = "WaitForPodsToRestart"
 	NodeDrainPhaseFailed                NodeDrainPhase = "Failed"
 )
 
+type NamespaceAndName struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+}
+
 // NodeDrainSpec defines the desired state of NodeDrain.
 type NodeDrainSpec struct {
-	// The name of the node to drian
+	// NodeName is the name of the node to drain
 	NodeName string `json:"nodeName"`
-	// Stop the controller cordening the node
-	SkipCordon bool `json:"skipCordon"`
-	// Ignore different kubelet versions when considering if a node group is empty
+	// DisableCordon stop the controller cordoning the node
+	// +kubebuilder:validation:Optional
+	DisableCordon bool `json:"disableCordon"`
+	// WaitForPods waits for the evicted pods to be running again before completing
+	// +kubebuilder:validation:Optional
+	WaitForPodsToRestart bool `json:"waitForPodsToRestart"`
+	// IgnoreVersion ignores different kubelet versions when considering if a node group is empty (for testing)
+	// +kubebuilder:validation:Optional
 	IgnoreVersion bool `json:"ignoreVersion"`
 }
 
@@ -37,17 +48,19 @@ type NodeDrainStatus struct {
 	LastUpdate metav1.Time `json:"lastUpdate,omitempty"`
 	// LastError represents the latest error if any in the latest reconciliation
 	LastError string `json:"lastError,omitempty"`
+	// PodsToBeEvicted is the list of pods for the controller needs to evict
+	PodsToBeEvicted []NamespaceAndName `json:"podsToBeEvicted,omitempty"`
 	// PendingPods is a list of pending pods for eviction
-	PendingPods []string `json:"pendingpods,omitempty"`
+	PendingPods []string `json:"pendingPods,omitempty"`
 	// TotalPods is the total number of all pods on the node from the start
 	// +operator-sdk:csv:customresourcedefinitions:type=status
-	TotalPods int `json:"totalpods,omitempty"`
+	TotalPods int `json:"totalPods,omitempty"`
 	// EvictionPods is the total number of pods up for eviction from the start
 	EvictionPodCount int `json:"evictionPods,omitempty"`
 	// Percentage completion of draining the node
 	DrainProgress int `json:"drainProgress,omitempty"`
 	// PodsBlockingDrain is a list of pods that are blocking the draining of this node
-	PodsBlockingDrain string `json:"podsblockingdrain,omitempty"`
+	PodsBlockingDrain string `json:"podsBlockingDrain,omitempty"`
 }
 
 // +kubebuilder:object:root=true

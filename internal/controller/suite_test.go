@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,6 +36,13 @@ var (
 	fakeRecorder *record.FakeRecorder
 	r            *NodeDrainReconciler
 )
+
+type alwaysTruePodStatusChecker struct {
+}
+
+func (alwaysTruePodStatusChecker) CheckStatus(pod *corev1.Pod) bool {
+	return true
+}
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -79,11 +87,12 @@ var _ = BeforeSuite(func() {
 
 	fakeRecorder = record.NewFakeRecorder(20)
 	r = &NodeDrainReconciler{
-		Client:    k8sClient,
-		Scheme:    scheme.Scheme,
-		MgrConfig: k8sManager.GetConfig(),
-		logger:    ctrl.Log.WithName("unit test"),
-		Recorder:  fakeRecorder,
+		Client:           k8sClient,
+		Scheme:           scheme.Scheme,
+		MgrConfig:        k8sManager.GetConfig(),
+		logger:           ctrl.Log.WithName("unit test"),
+		Recorder:         fakeRecorder,
+		PodStatusChecker: alwaysTruePodStatusChecker{},
 	}
 	ctx, cancel = context.WithCancel(ctrl.SetupSignalHandler())
 

@@ -12,6 +12,15 @@ import (
 	"github.com/gezb/node-drainer/test/utils"
 )
 
+// k8sRole is the role of the node reserved for drain testing
+const k8sRole = "draintest"
+
+// worker2Node is the name of the node reserved for drain testing
+const worker2Node = "kind-worker2"
+
+// worker3Node is the name of the node reserved for further testing
+const worker3Node = "kind-worker3"
+
 var (
 	// Optional Environment Variables:
 	// - PROMETHEUS_INSTALL_SKIP=true: Skips Prometheus Operator installation during test setup.
@@ -42,6 +51,13 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	By("Labeling and cordening the test nodes so only our workloads run on them")
+	// worker2
+	utils.LabelNode(worker2Node, k8sRole)
+	utils.CordonNode(worker2Node)
+	// worker 3
+	utils.LabelNode(worker3Node, k8sRole)
+	utils.CordonNode(worker3Node)
 	By("Ensure that Prometheus is enabled")
 	_ = utils.UncommentCode("config/default/kustomization.yaml", "#- ../prometheus", "#")
 
@@ -50,8 +66,6 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
 	By("loading the manager(Operator) image on Kind")
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
