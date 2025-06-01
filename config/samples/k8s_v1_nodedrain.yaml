@@ -4,3 +4,5 @@ metadata:
   name: nodedrain-sample
 spec:
   nodeName: node1
+  disableCordon: false # optional
+  waitForPodsToRestart: true # optional
