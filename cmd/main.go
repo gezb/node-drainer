@@ -23,6 +23,7 @@ import (
 
 	k8sv1 "github.com/gezb/node-drainer/api/v1"
 	"github.com/gezb/node-drainer/internal/controller"
+	"github.com/gezb/node-drainer/internal/events"
 	"github.com/gezb/node-drainer/internal/utils"
 	// +kubebuilder:scaffold:imports
 )
@@ -191,7 +192,7 @@ func main() {
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		MgrConfig:        mgr.GetConfig(),
-		Recorder:         mgr.GetEventRecorderFor("node-drain-controller"),
+		Recorder:         events.NewRecorder(mgr.GetEventRecorderFor("node-drain-controller")),
 		PodStatusChecker: utils.RuntimePodStatusChecker{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeDrain")

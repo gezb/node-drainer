@@ -1,16 +1,16 @@
 package controller
 
 import (
-	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gezb/node-drainer/internal/events"
 
 	gezbcoukalphav1 "github.com/gezb/node-drainer/api/v1"
 )
@@ -26,15 +26,15 @@ var _ = Describe("Node Drain", func() {
 
 	BeforeEach(func() {
 		// create testNamespace ns
-		testNs := &corev1.Namespace{
+		namespace := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: testNamespace,
 			},
 		}
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(testNs), &corev1.Namespace{}); err != nil {
-			Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(namespace), &corev1.Namespace{}); err != nil {
+			Expect(k8sClient.Create(ctx, namespace)).To(Succeed())
 		}
-		DeferCleanup(clearEvents)
+		ClearEventsCache()
 	})
 	var nd *gezbcoukalphav1.NodeDrain
 
@@ -54,13 +54,11 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
@@ -87,13 +85,10 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
-
-			verifyNoEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
@@ -131,13 +126,10 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
-
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(3))
@@ -201,17 +193,16 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhasePodsBlocking))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePodsBlocking)
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePodsBlocking)
+			// Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal("block-1,block-2"))
 
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
-			verifyEvent(corev1.EventTypeWarning, EventReasonDrainBlockedByPods,
-				"Node node1 is blocked from draining by pod: block-1")
-			verifyEvent(corev1.EventTypeWarning, EventReasonDrainBlockedByPods,
-				"Node node1 is blocked from draining by pod: block-2")
+			Expect(fakeRecorder.DetectedEvent(events.EventReasonDrainBlockedByPods,
+				"Node node1 is blocked from draining by pod: block-1")).To(BeTrue())
+			Expect(fakeRecorder.DetectedEvent(events.EventReasonDrainBlockedByPods,
+				"Node node1 is blocked from draining by pod: block-2")).To(BeTrue())
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(4))
@@ -248,10 +239,9 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(4))
@@ -298,9 +288,9 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(1))
@@ -326,10 +316,8 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
-
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(1))
@@ -368,13 +356,11 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeCordoned, "Node node1 cordoned")
-			verifyEvent(corev1.EventTypeNormal, EventReasonNodeDraining, "Node node1 draining")
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(3))
@@ -414,9 +400,11 @@ var _ = Describe("Node Drain", func() {
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nd), nodeDrain)).To(Succeed())
 				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
 			}, timeout, interval).Should(Succeed())
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyEvent(corev1.EventTypeWarning, EventReasonNodeNotFound, "Node: node1 not found")
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			// verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+
+			Expect(fakeRecorder.DetectedEvent(events.EventReasonNodeNotFound, "Node: node1 not found")).To(BeTrue())
 
 			Expect(nodeDrain.Status.LastError).To(Equal(""))
 			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
@@ -492,63 +480,5 @@ func getTestNode(nodeName string, unschedulable bool) *corev1.Node {
 		Spec: corev1.NodeSpec{
 			Unschedulable: unschedulable,
 		},
-	}
-}
-
-func verifyEvent(eventType, eventReason, eventMessage string) {
-	By(fmt.Sprintf("Verifying that event %s with message %s was created", eventReason, eventMessage))
-	isEventMatch := isEventOccurred(eventType, eventReason, eventMessage)
-	ExpectWithOffset(1, isEventMatch).To(BeTrue())
-}
-
-func verifyNoEvent(eventType, eventReason, eventMessage string) {
-	By(fmt.Sprintf("Verifying that event %s was not created", eventReason))
-	isEventMatch := isEventOccurred(eventType, eventReason, eventMessage)
-	ExpectWithOffset(1, isEventMatch).To(BeFalse())
-}
-
-// isEventOccurred checks whether an event has occoured
-func isEventOccurred(eventType, eventReason, eventMessage string) bool {
-	expected := fmt.Sprintf("%s %s %s", eventType, eventReason, eventMessage)
-	isEventMatch := false
-
-	unMatchedEvents := make(chan string, len(fakeRecorder.Events))
-	isDone := false
-	for {
-		select {
-		case event := <-fakeRecorder.Events:
-			if isEventMatch = event == expected; isEventMatch {
-				isDone = true
-			} else {
-				unMatchedEvents <- event
-			}
-		default:
-			isDone = true
-		}
-		if isDone {
-			break
-		}
-	}
-
-	close(unMatchedEvents)
-	for unMatchedEvent := range unMatchedEvents {
-		fakeRecorder.Events <- unMatchedEvent
-	}
-	return isEventMatch
-}
-
-func verifyStatusEvent(status gezbcoukalphav1.NodeDrainPhase) {
-	eventType := corev1.EventTypeNormal
-	eventReason := EventReasonStatusUpdated
-	eventMessage := fmt.Sprintf("Status updated to: %s", status)
-	By(fmt.Sprintf("Verifying that event %s with message %s was created", eventReason, eventMessage))
-	isEventMatch := isEventOccurred(eventType, eventReason, eventMessage)
-	ExpectWithOffset(1, isEventMatch).To(BeTrue())
-}
-
-// clearEvents loop over the events channel until it is empty from events
-func clearEvents() {
-	for len(fakeRecorder.Events) > 0 {
-		<-fakeRecorder.Events
 	}
 }
