@@ -4,13 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	k8sv1 "github.com/gezb/node-drainer/api/v1"
+	"github.com/gezb/node-drainer/internal/events"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -33,7 +35,7 @@ var (
 	testEnv      *envtest.Environment
 	cfg          *rest.Config
 	k8sClient    client.Client
-	fakeRecorder *record.FakeRecorder
+	fakeRecorder *EventRecorder
 	r            *NodeDrainReconciler
 )
 
@@ -42,6 +44,81 @@ type alwaysTruePodStatusChecker struct {
 
 func (alwaysTruePodStatusChecker) CheckStatus(pod *corev1.Pod) bool {
 	return true
+}
+
+var _ events.Recorder = (*EventRecorder)(nil)
+
+// EventRecorder is a mock event recorder that is used to facilitate testing.
+type EventRecorder struct {
+	mu     sync.RWMutex
+	calls  map[string]int
+	events []events.Event
+}
+
+func NewEventRecorder() *EventRecorder {
+	return &EventRecorder{
+		calls: map[string]int{},
+	}
+}
+
+func ClearEventsCache() {
+	fakeRecorder.Reset()
+}
+
+func (e *EventRecorder) Publish(evts ...events.Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, evts...)
+	for _, evt := range evts {
+		e.calls[evt.Reason]++
+	}
+}
+
+func (e *EventRecorder) Calls(reason string) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.calls[reason]
+}
+
+func (e *EventRecorder) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = nil
+	e.calls = map[string]int{}
+}
+
+func (e *EventRecorder) Events() (res []events.Event) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, evt := range e.events {
+		res = append(res, events.Event{
+			InvolvedObject: evt.InvolvedObject,
+			Type:           evt.Type,
+			Reason:         evt.Reason,
+			Message:        evt.Message,
+			DedupeValues:   lo.Map(evt.DedupeValues, func(v string, _ int) string { return v }),
+		})
+	}
+	return res
+}
+
+func (e *EventRecorder) ForEachEvent(f func(evt events.Event)) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, e := range e.events {
+		f(e)
+	}
+}
+
+func (e *EventRecorder) DetectedEvent(reason string, msg string) bool {
+	foundEvent := false
+	e.ForEachEvent(func(evt events.Event) {
+		if evt.Message == msg && evt.Reason == reason {
+			foundEvent = true
+		}
+	})
+	return foundEvent
 }
 
 func TestControllers(t *testing.T) {
@@ -85,7 +162,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
-	fakeRecorder = record.NewFakeRecorder(20)
+	fakeRecorder = NewEventRecorder()
 	r = &NodeDrainReconciler{
 		Client:           k8sClient,
 		Scheme:           scheme.Scheme,
