@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/util"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -100,12 +101,9 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	r.logger.Info(fmt.Sprintf("Reconciling NodeDrain in status %s", nodeDrain.Status.Phase))
-	defer r.logger.Info("Finished Reconciling NodeDrain")
-
 	// new CRD
 	if nodeDrain.Status.Phase == "" {
-		setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhasePending)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhasePending)
 
 		if err = r.Client.Status().Update(ctx, nodeDrain); err != nil {
 			r.logger.Error(err, "Failed to update NodeDrain with \"Pending\" status")
@@ -128,10 +126,10 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseDraining:
 		needUpdate = true
-		needsRequeue, drainError, err = r.reconcileDraining(ctx, drainer, nodeDrain)
+		needsRequeue, drainError, err = r.reconcileDraining(drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart:
 		needUpdate = true
-		needsRequeue, drainError, err = r.reconcileDraining(ctx, drainer, nodeDrain)
+		needsRequeue = r.reconcileWaitForPodsToRestart(ctx, nodeDrain)
 
 	}
 
@@ -144,7 +142,17 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if needUpdate {
-		if updateErr := r.Client.Status().Update(ctx, nodeDrain); updateErr != nil {
+		newStatus := nodeDrain.Status.DeepCopy()
+		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			// Fetch the latest version of NodeDrain before attempting update
+			getErr := r.Get(ctx, req.NamespacedName, nodeDrain)
+			if getErr != nil {
+				return getErr
+			}
+			nodeDrain.Status = *newStatus
+			return r.Client.Status().Update(ctx, nodeDrain)
+		})
+		if updateErr != nil {
 			r.logger.Error(err, "Failed to update NodeDrain Status")
 			return r.onReconcileError(ctx, drainer, nodeDrain, updateErr)
 		}
@@ -165,7 +173,7 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 			// node drain  has failed - nodeName doesn't match an existing node
 			message := fmt.Sprintf("Node: %s not found", nodeName)
 			publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
-			setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
+			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
 			return true, nil
 		} else {
 			r.logger.Error(err, "Unexpected error for the NodeName field", "NodeName", nodeName)
@@ -198,7 +206,7 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 	if err != nil {
 		return false, err
 	}
-	setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseCordoned)
+	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCordoned)
 
 	return true, nil
 }
@@ -219,7 +227,7 @@ func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *dr
 	}
 	nodeDrain.Status.PodsBlockingDrain = strings.Join(podsBlocking, ",")
 	if len(podsBlocking) > 0 {
-		setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhasePodsBlocking)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhasePodsBlocking)
 		// requeue this request so we check when the blocking pod(s) have been removed
 		return true, true, nil
 	}
@@ -236,16 +244,16 @@ func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *dr
 		return true, false, err
 	}
 	if !allNodesCordoned {
-		setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
 		// requeue this request so we check when the blocking pod(s) have been removed
 		return true, true, nil
 	}
-	setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseDraining)
+	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseDraining)
 	return true, false, nil
 }
 
 // reconcileDraining Drains the given node
-func (r *NodeDrainReconciler) reconcileDraining(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
+func (r *NodeDrainReconciler) reconcileDraining(drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
 	if nodeDrain.Status.Phase == gezbcoukalphav1.NodeDrainPhaseDraining {
 
 		pendingList, errlist := drainer.GetPodsForDeletion(nodeDrain.Spec.NodeName)
@@ -256,10 +264,10 @@ func (r *NodeDrainReconciler) reconcileDraining(ctx context.Context, drainer *dr
 			nodeDrain.Status.PodsToBeEvicted = GetNameSpaceAndName(pendingList.Pods())
 		}
 		nodeName := nodeDrain.Spec.NodeName
-		r.logger.Info("Evict all Pods from Node", "nodeName", nodeName)
+		r.logger.Info(fmt.Sprintf("Evict all Pods from Node %s", nodeName), "nodeName", nodeName)
 		if err := drain.RunNodeDrain(drainer, nodeName); err != nil {
 			r.logger.Info("Not all pods evicted", "nodeName", nodeName, "error", err)
-			setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
+			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
 			// ignore updated here we need to save the CR anyway
 			err = r.updatePendingPodCount(drainer, nodeDrain)
 			if err != nil {
@@ -275,24 +283,28 @@ func (r *NodeDrainReconciler) reconcileDraining(ctx context.Context, drainer *dr
 
 	}
 	if nodeDrain.Spec.WaitForPodsToRestart {
-
 		message := fmt.Sprintf("Waiting for %d pod(s) to restart", len(nodeDrain.Status.PodsToBeEvicted))
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeNormal, events.EventReasonWaitingForPodsToRestart, message)
-		setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart)
+		// requeue to wait for the pods to be running
+		return true, true, nil
+	} else {
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
+		return false, false, nil
+	}
+}
 
-		if updateErr := r.Client.Status().Update(ctx, nodeDrain); updateErr != nil {
-			r.logger.Error(updateErr, "Failed to update NodeDrain Status")
-			return true, true, updateErr
-		}
-		allPodsRunning := false
+// reconcileWaitForPodsToRestart wiats for all evicted pods to be running again
+func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) bool {
+	allPodsRunning := false
 
-		for _, nameAndNamespace := range nodeDrain.Status.PodsToBeEvicted {
-			pod := corev1.Pod{}
-			err := r.Client.Get(ctx, client.ObjectKey{Namespace: nameAndNamespace.Namespace, Name: nameAndNamespace.Name}, &pod)
-			if err != nil {
-				r.logger.Error(err, "Failed to get pod", "Pod.Namespace", nameAndNamespace.Namespace, "Pod.Name", nameAndNamespace.Name)
-				return true, true, err
-			}
+	for _, nameAndNamespace := range nodeDrain.Status.PodsToBeEvicted {
+		pod := corev1.Pod{}
+		err := r.Client.Get(ctx, client.ObjectKey{Namespace: nameAndNamespace.Namespace, Name: nameAndNamespace.Name}, &pod)
+		if err != nil {
+			r.logger.Info(fmt.Sprintf("Failed to get pod %s in namespace %s", nameAndNamespace.Name, nameAndNamespace.Namespace))
+
+		} else {
 			// check if the pod is running
 			if !r.PodStatusChecker.CheckStatus(&pod) {
 				r.logger.Info("Pod not running yet", "Pod.Namespace", nameAndNamespace.Namespace, "Pod.Name", nameAndNamespace.Name)
@@ -302,18 +314,14 @@ func (r *NodeDrainReconciler) reconcileDraining(ctx context.Context, drainer *dr
 				allPodsRunning = true
 			}
 		}
-
-		if allPodsRunning {
-			r.logger.Info("All pods running, updating status to complete")
-			setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
-			return false, true, nil
-		}
-	} else {
-		setStatus(nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
-		return false, true, nil
 	}
-	// requeue to wait for the pods to be running
-	return true, false, nil
+
+	if allPodsRunning {
+		r.logger.Info("All pods running, updating status to complete")
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
+		return false
+	}
+	return true
 }
 
 func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) ([]string, error) {
@@ -423,9 +431,11 @@ func setLastUpdate(nodeDrain *gezbcoukalphav1.NodeDrain) {
 	nodeDrain.Status.LastUpdate.Time = time.Now()
 }
 
-func setStatus(nodeDrain *gezbcoukalphav1.NodeDrain, phase gezbcoukalphav1.NodeDrainPhase) {
+func setStatus(recorder events.Recorder, nodeDrain *gezbcoukalphav1.NodeDrain, phase gezbcoukalphav1.NodeDrainPhase) {
 	setLastUpdate(nodeDrain)
 	nodeDrain.Status.Phase = phase
+	message := fmt.Sprintf("Status updated to %s", phase)
+	publishEvent(recorder, nodeDrain, corev1.EventTypeNormal, events.EventReasonStatusUpdated, message)
 }
 
 func publishEvent(recorder events.Recorder, nodeDrain *gezbcoukalphav1.NodeDrain, eventType string, reason string, message string) {
