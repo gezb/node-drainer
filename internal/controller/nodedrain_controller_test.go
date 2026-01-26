@@ -521,6 +521,8 @@ func getTestNodeDrain(disableCordon bool, waitForRestart bool) *gezbcoukalphav1.
 		},
 		Spec: gezbcoukalphav1.NodeDrainSpec{
 			NodeName:             "node1",
+			VersionToDrainRegex:  "1.35.*",
+			NodeRole:             "test-role",
 			DisableCordon:        disableCordon,
 			WaitForPodsToRestart: waitForRestart,
 		},
@@ -549,6 +551,11 @@ func getTestNode(nodeName string, unschedulable bool) *corev1.Node {
 		},
 		Spec: corev1.NodeSpec{
 			Unschedulable: unschedulable,
+		},
+		Status: corev1.NodeStatus{
+			NodeInfo: corev1.NodeSystemInfo{
+				KubeletVersion: "1.35.5-eks",
+			},
 		},
 	}
 }

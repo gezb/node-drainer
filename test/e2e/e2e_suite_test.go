@@ -15,11 +15,20 @@ import (
 // k8sRole is the role of the node reserved for drain testing
 const k8sRole = "draintest"
 
+// k8sCuster is the name of the k3d cluster used for e2e testing
+const k8sCuster = "nd-e2e"
+
+// K8sVersionRegex is the regex to match the k8s version used in the e2e tests
+const K8sVersionRegex = "^v1\\.34\\..*$"
+
+// k8sKubeconfig is the path to the kubeconfig file used for e2e testing
+const k8sKubeconfig = "/tmp/nd-e2e-kubeconfig.yaml"
+
 // worker2Node is the name of the node reserved for drain testing
-const worker2Node = "kind-worker2"
+const worker2Node = "k3d-nd-e2e-agent-1"
 
 // worker3Node is the name of the node reserved for further testing
-const worker3Node = "kind-worker3"
+const worker3Node = "k3d-nd-e2e-agent-2"
 
 var (
 	// Optional Environment Variables:
@@ -51,6 +60,10 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	By("Setting KUBECONFIG environment variable")
+	err := os.Setenv("KUBECONFIG", k8sKubeconfig)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to set KUBECONFIG environment variable")
+
 	By("Labeling and cordening the test nodes so only our workloads run on them")
 	// worker2
 	utils.LabelNode(worker2Node, k8sRole)
@@ -58,16 +71,20 @@ var _ = BeforeSuite(func() {
 	// worker 3
 	utils.LabelNode(worker3Node, k8sRole)
 	utils.CordonNode(worker3Node)
+
+	By("Draining the test nodes to ensure a clean state")
+	utils.DrainNodes([]string{worker2Node, worker3Node})
+
 	By("Ensure that Prometheus is enabled")
 	_ = utils.UncommentCode("config/default/kustomization.yaml", "#- ../prometheus", "#")
 
 	By("building the manager(Operator) image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
-	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
+	By("loading the manager(Operator) image on k3d")
+	err = utils.LoadImageToK3dClusterWithName(k8sCuster, projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
 
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
@@ -106,4 +123,7 @@ var _ = AfterSuite(func() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()
 	}
+	By("Unsetting KUBECONFIG environment variable")
+	err := os.Unsetenv("KUBECONFIG")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to unset KUBECONFIG environment variable")
 })
