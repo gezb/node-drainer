@@ -29,15 +29,9 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-var (
-	ctx          context.Context
-	cancel       context.CancelFunc
-	testEnv      *envtest.Environment
-	cfg          *rest.Config
-	k8sClient    client.Client
-	fakeRecorder *EventRecorder
-	r            *NodeDrainReconciler
-)
+type PodStatusChecker interface {
+	CheckStatus(pod *corev1.Pod) bool
+}
 
 type alwaysTruePodStatusChecker struct {
 }
@@ -46,7 +40,12 @@ func (alwaysTruePodStatusChecker) CheckStatus(pod *corev1.Pod) bool {
 	return true
 }
 
-var _ events.Recorder = (*EventRecorder)(nil)
+type neverTruePodStatusChecker struct {
+}
+
+func (neverTruePodStatusChecker) CheckStatus(pod *corev1.Pod) bool {
+	return false
+}
 
 // EventRecorder is a mock event recorder that is used to facilitate testing.
 type EventRecorder struct {
@@ -54,6 +53,18 @@ type EventRecorder struct {
 	calls  map[string]int
 	events []events.Event
 }
+
+var (
+	ctx           context.Context
+	cancel        context.CancelFunc
+	testEnv       *envtest.Environment
+	cfg           *rest.Config
+	k8sClient     client.Client
+	fakeRecorder  *EventRecorder
+	r             *NodeDrainReconciler
+	statusChecker PodStatusChecker
+	_             events.Recorder = (*EventRecorder)(nil)
+)
 
 func NewEventRecorder() *EventRecorder {
 	return &EventRecorder{
@@ -124,7 +135,9 @@ func (e *EventRecorder) DetectedEvent(reason string, msg string) bool {
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Controller Suite")
+	suiteConfig, reporterConfig := GinkgoConfiguration()
+	reporterConfig.Verbose = true
+	RunSpecs(t, "Controller Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
@@ -162,6 +175,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
+	statusChecker = alwaysTruePodStatusChecker{}
 	fakeRecorder = NewEventRecorder()
 	r = &NodeDrainReconciler{
 		Client:           k8sClient,
@@ -169,7 +183,7 @@ var _ = BeforeSuite(func() {
 		MgrConfig:        k8sManager.GetConfig(),
 		logger:           ctrl.Log.WithName("unit test"),
 		Recorder:         fakeRecorder,
-		PodStatusChecker: alwaysTruePodStatusChecker{},
+		PodStatusChecker: statusChecker,
 	}
 	ctx, cancel = context.WithCancel(ctrl.SetupSignalHandler())
 

@@ -30,9 +30,10 @@ import (
 )
 
 const (
-	EventReasonNodeNotFound            = "Node not found"
-	EventReasonDrainBlockedByPods      = "Draining blocked by pod(s)"
-	EventReasonWaitingForPodsToRestart = "Waiting for pods to restart"
+	EventReasonNodeNotFound            = "NodeNotFound"
+	EventReasonStatusUpdated           = "StatusUpdated"
+	EventReasonDrainBlockedByPods      = "DrainingBlocked"
+	EventReasonWaitingForPodsToRestart = "WaitingForPodsToRestart"
 )
 
 type Event struct {

@@ -1,0 +1,7 @@
+apiVersion: k8s.gezb.co.uk/v1
+kind: NodeDrain
+metadata:
+  name: nodedrain-sample
+spec:
+  nodeName: kind-worker3
+  ignoreVersion: true
