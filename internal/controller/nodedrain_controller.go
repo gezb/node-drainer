@@ -95,6 +95,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
+
 	// create a drain Helper
 	drainer, err := createDrainer(ctx, r.MgrConfig)
 	if err != nil {
@@ -170,7 +171,6 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 	if err != nil {
 		if apiErrors.IsNotFound(err) {
 			r.logger.Error(err, "Didn't find a node matching the NodeName field", "NodeName", nodeName)
-			// node drain  has failed - nodeName doesn't match an existing node
 			message := fmt.Sprintf("Node: %s not found", nodeName)
 			publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
@@ -192,6 +192,7 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 			}
 		}
 	}
+
 	podlist, err := drainer.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx,
 		metav1.ListOptions{
 			FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeDrain.Spec.NodeName}).String(),
@@ -232,14 +233,7 @@ func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *dr
 		return true, true, nil
 	}
 
-	node, err := r.fetchNode(ctx, drainer, nodeDrain.Spec.NodeName)
-	if err != nil {
-		return false, false, err
-	}
-	kubeletVersion := node.Status.NodeInfo.KubeletVersion
-	nodeRole := node.Labels["role"]
-
-	allNodesCordoned, err := r.areAllNodesCordoned(ctx, nodeDrain.Spec.IgnoreVersion, kubeletVersion, nodeRole)
+	allNodesCordoned, err := r.areAllNodesCordoned(ctx, nodeDrain)
 	if err != nil {
 		return true, false, err
 	}
@@ -359,16 +353,19 @@ func (r *NodeDrainReconciler) fetchNode(ctx context.Context, drainer *drain.Help
 	return node, nil
 }
 
-func (r *NodeDrainReconciler) areAllNodesCordoned(ctx context.Context, ignoreVersion bool, kubeletVersion string, nodeRole string) (bool, error) {
+func (r *NodeDrainReconciler) areAllNodesCordoned(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, error) {
 	nodeList := &corev1.NodeList{}
 	err := r.Client.List(ctx, nodeList, &client.ListOptions{})
 	if err != nil {
 		return false, err
 	}
+
+	pattern := regexp.MustCompile(nodeDrain.Spec.VersionToDrainRegex)
 	unschedulable := true
 	for _, node := range nodeList.Items {
-		if node.Labels["role"] == nodeRole &&
-			(ignoreVersion || (node.Status.NodeInfo.KubeletVersion == kubeletVersion)) {
+		if node.Name != nodeDrain.Spec.NodeName && // ignore ourselves
+			node.Labels["role"] == nodeDrain.Spec.NodeRole &&
+			pattern.MatchString(node.Status.NodeInfo.KubeletVersion) {
 			if !node.Spec.Unschedulable {
 				unschedulable = false
 			}

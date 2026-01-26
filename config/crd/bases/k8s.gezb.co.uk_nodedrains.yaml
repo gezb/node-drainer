@@ -51,12 +51,15 @@ spec:
               disableCordon:
                 description: DisableCordon stop the controller cordoning the node
                 type: boolean
-              ignoreVersion:
-                description: IgnoreVersion ignores different kubelet versions when
-                  considering if a node group is empty (for testing)
-                type: boolean
               nodeName:
                 description: NodeName is the name of the node to drain
+                type: string
+              nodeRole:
+                description: NodeRole is the nodes expected "role" label
+                type: string
+              versionToDrainRegex:
+                description: VersionToDrainRegex is a regex to match the expected
+                  kubernetes version that we want to Drain
                 type: string
               waitForPodsToRestart:
                 description: WaitForPods waits for the evicted pods to be running
@@ -64,6 +67,8 @@ spec:
                 type: boolean
             required:
             - nodeName
+            - nodeRole
+            - versionToDrainRegex
             type: object
           status:
             description: NodeDrainStatus defines the observed state of NodeDrain.

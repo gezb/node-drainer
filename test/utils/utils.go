@@ -162,6 +162,14 @@ func LoadImageToKindClusterWithName(name string) error {
 	return err
 }
 
+// LoadImageToK3dClusterWithName loads a local docker image to the k3d cluster
+func LoadImageToK3dClusterWithName(clusterName, imageName string) error {
+	k3dOptions := []string{"image", "import", imageName, "--cluster", clusterName}
+	cmd := exec.Command("k3d", k3dOptions...)
+	_, err := Run(cmd)
+	return err
+}
+
 // GetNonEmptyLines converts given command output string into individual objects
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {
@@ -256,6 +264,13 @@ func LabelNode(nodeName string, role string) {
 	cmd := exec.Command("kubectl", "label", "node", nodeName, "role="+role)
 	_, err := Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label node "+role)
+}
+
+func DrainNodes(nodeNames []string) {
+	args := append([]string{"drain", "--ignore-daemonsets", "--delete-emptydir-data"}, nodeNames...)
+	cmd := exec.Command("kubectl", args...)
+	_, err := Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to drain nodes "+strings.Join(nodeNames, ", "))
 }
 
 func CordonNode(nodeName string) {

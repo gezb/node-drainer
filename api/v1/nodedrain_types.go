@@ -29,15 +29,16 @@ type NamespaceAndName struct {
 type NodeDrainSpec struct {
 	// NodeName is the name of the node to drain
 	NodeName string `json:"nodeName"`
+	// VersionToDrainRegex is a regex to match the expected kubernetes version that we want to Drain
+	VersionToDrainRegex string `json:"versionToDrainRegex"`
+	// NodeRole is the nodes expected "role" label
+	NodeRole string `json:"nodeRole"`
 	// DisableCordon stop the controller cordoning the node
 	// +kubebuilder:validation:Optional
 	DisableCordon bool `json:"disableCordon"`
 	// WaitForPods waits for the evicted pods to be running again before completing
 	// +kubebuilder:validation:Optional
 	WaitForPodsToRestart bool `json:"waitForPodsToRestart"`
-	// IgnoreVersion ignores different kubelet versions when considering if a node group is empty (for testing)
-	// +kubebuilder:validation:Optional
-	IgnoreVersion bool `json:"ignoreVersion"`
 }
 
 // NodeDrainStatus defines the observed state of NodeDrain.
