@@ -26,13 +26,12 @@ func TestE2E() error {
 	if err != nil {
 		return err
 	}
+	// make sure we delete the kind cluster
+	defer sh.RunWithV(env, "k3d", "cluster", "delete", CLUSTER_NAME)
 
 	err = sh.RunWithV(env, "go", "test", "./test/e2e/", "-v", "-ginkgo.v")
 	if err != nil {
 		return err
 	}
-
-	// make sure we delete the kind cluster
-	defer sh.RunWithV(env, "k3d", "cluster", "delete", CLUSTER_NAME)
 	return nil
 }

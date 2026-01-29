@@ -235,7 +235,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			expectNumberOfPodsRunning(2)
 
-			nodeDrainFile := applyNodeDrain(false)
+			nodeDrainFile := applyNodeDrain(false, K8sVersionRegex, k8sRole)
 
 			By("Waiting for all pods to be removed")
 			expectNumberOfPodsRunning(0)
@@ -257,7 +257,7 @@ var _ = Describe("Manager", Ordered, func() {
 			err = os.Remove(nodeDrainFile)
 			Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
 
-			By(" Deleting test statefulsets")
+			By("Deleting test statefulsets")
 			cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
@@ -289,7 +289,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		drainCheckFile := applyDrainCheck("^blocking-.*")
 
-		nodeDrainFile := applyNodeDrain(false)
+		nodeDrainFile := applyNodeDrain(false, K8sVersionRegex, k8sRole)
 
 		By("Checking we still have all pods running")
 		expectNumberOfPodsRunning(2)
@@ -323,7 +323,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("Clean up after the test")
 
-		By(" Deleting nginx statefulsets")
+		By("Deleting nginx statefulsets")
 		cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
@@ -351,7 +351,7 @@ var _ = Describe("Manager", Ordered, func() {
 		By("Uncordening our test node")
 		utils.UncordonNode(worker2Node)
 
-		By("Verifying the number of pods on the node(s)")
+		By("Verifying the number of pods on the node(s) is 0")
 
 		expectNumberOfPodsRunning(0)
 
@@ -361,13 +361,13 @@ var _ = Describe("Manager", Ordered, func() {
 		By("Waiting for all pods to be running")
 		expectNumberOfPodsRunning(2)
 
-		By("Cordening the worker2 now it has workload on it")
-		utils.CordonNode(worker2Node)
+		// By("Cordening the worker2 now it has workload on it")
+		// utils.CordonNode(worker2Node)
 
-		By("Uncordening the other node")
+		By("Uncordening worker3")
 		utils.UncordonNode(worker3Node)
 
-		nodeDrainFile := applyNodeDrain(false)
+		nodeDrainFile := applyNodeDrain(false, K8sVersionRegex, k8sRole)
 
 		nodeDrainIsPhaseOtherNodesNotCordoned := func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
@@ -395,12 +395,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("Clean up after the test")
 
-		By(" Deleting nginx statefulsets")
+		By("Deleting nginx statefulsets")
 		cmd = exec.Command("kubectl", "delete", "statefulset", "nginx")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
 
-		By(" Deleting nginx2 statefulsets")
+		By("Deleting nginx2 statefulsets")
 		cmd = exec.Command("kubectl", "delete", "statefulset", "nginx2")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
@@ -423,7 +423,7 @@ var _ = Describe("Manager", Ordered, func() {
 		By("Uncordening our test nodes")
 		utils.UncordonNode(worker2Node)
 
-		By("Verifying the number of pods on the node(s)")
+		By("Verifying the number of pods on the node(s) is 0")
 
 		expectNumberOfPodsRunning(0)
 
@@ -433,7 +433,7 @@ var _ = Describe("Manager", Ordered, func() {
 		By("Waiting for all pods to be running")
 		expectNumberOfPodsRunning(2)
 
-		nodeDrainFile := applyNodeDrain(true)
+		nodeDrainFile := applyNodeDrain(true, K8sVersionRegex, k8sRole)
 
 		By("Drain should run and we should be left no pods")
 		expectNumberOfPodsRunning(0)
@@ -460,12 +460,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("Clean up after the test")
 
-		By(" Deleting nginx statefulsets")
+		By("Deleting nginx statefulsets")
 		cmd := exec.Command("kubectl", "delete", "statefulset", "nginx")
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
 
-		By(" Deleting nginx2 statefulsets")
+		By("Deleting nginx2 statefulsets")
 		cmd = exec.Command("kubectl", "delete", "statefulset", "nginx2")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nginx statefulset")
@@ -473,6 +473,62 @@ var _ = Describe("Manager", Ordered, func() {
 		By("deleting the NodeDrain")
 		cmd = exec.Command("kubectl", "delete", "-f", nodeDrainFile)
 		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+		err = os.Remove(nodeDrainFile)
+		Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+
+		By("re-cordening our test nodes")
+		utils.CordonNode(worker2Node)
+	})
+
+	It("if NodeDrain Role does not match the nodes role the drain will fail", func() {
+
+		By("Uncordening our test nodes")
+		utils.UncordonNode(worker2Node)
+
+		nodeDrainFile := applyNodeDrain(true, K8sVersionRegex, "wrong-role")
+
+		nodeDrainIsPhaseFailed := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("nodedrain-sample   Failed"))
+		}
+		Eventually(nodeDrainIsPhaseFailed, 5*time.Minute).Should(Succeed())
+
+		By("Clean up after the test")
+
+		By("deleting the NodeDrain")
+		cmd := exec.Command("kubectl", "delete", "-f", nodeDrainFile)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
+		err = os.Remove(nodeDrainFile)
+		Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
+
+		By("re-cordening our test nodes")
+		utils.CordonNode(worker2Node)
+	})
+
+	It("if NodeDrain K8S Version regexp does not match the nodes kubelet version the drain will fail", func() {
+
+		By("Uncordening our test nodes")
+		utils.UncordonNode(worker2Node)
+
+		nodeDrainFile := applyNodeDrain(true, "^v1\\.30\\..*$", k8sRole)
+
+		nodeDrainIsPhaseFailed := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "nodedrain", "nodedrain-sample")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("nodedrain-sample   Failed"))
+		}
+		Eventually(nodeDrainIsPhaseFailed, 5*time.Minute).Should(Succeed())
+
+		By("Clean up after the test")
+
+		By("deleting the NodeDrain")
+		cmd := exec.Command("kubectl", "delete", "-f", nodeDrainFile)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed delete nodeDrain")
 		err = os.Remove(nodeDrainFile)
 		Expect(err).NotTo(HaveOccurred(), "Failed remove nodeDrainFile")
@@ -503,7 +559,7 @@ spec:
 	return drainCheckFile
 }
 
-func applyNodeDrain(waitForPodToRestart bool) string {
+func applyNodeDrain(waitForPodToRestart bool, versionToDrainRegex string, role string) string {
 	By("Creating NodeDrain for node :" + worker2Node)
 
 	nodeDrain := fmt.Sprintf(`
@@ -516,7 +572,7 @@ spec:
   versionToDrainRegex: %s
   nodeRole: %s
   waitForPodsToRestart: %t
-`, worker2Node, K8sVersionRegex, k8sRole, waitForPodToRestart)
+`, worker2Node, versionToDrainRegex, role, waitForPodToRestart)
 
 	nodeDrainFile, err := utils.CreateTempFile(nodeDrain)
 	Expect(err).NotTo(HaveOccurred(), "Failed creating NodeDrain file to apply: "+nodeDrainFile)
@@ -585,7 +641,7 @@ spec:
         kubernetes.io/arch: amd64
         role: %s
 `, k8sRole)
-	inflate = strings.Replace(inflate, "{{.metadata.name}}", name, -1)
+	inflate = strings.ReplaceAll(inflate, "{{.metadata.name}}", name)
 	inflateFile, err := utils.CreateTempFile(inflate)
 	Expect(err).NotTo(HaveOccurred(), "Failed apply "+name)
 	cmd := exec.Command("kubectl", "apply", "-f", inflateFile)
