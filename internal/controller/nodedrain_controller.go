@@ -79,18 +79,18 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	if !controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && nodeDrain.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && nodeDrain.DeletionTimestamp.IsZero() {
 		// Add finalizer when object is created
 		controllerutil.AddFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
 
-	} else if controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && !nodeDrain.ObjectMeta.DeletionTimestamp.IsZero() {
+	} else if controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && !nodeDrain.DeletionTimestamp.IsZero() {
 		// The object is being deleted
 
 		// Do nothing special on deletion for now
 
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
-		if err := r.Client.Update(ctx, nodeDrain); err != nil {
+		if err := r.Update(ctx, nodeDrain); err != nil {
 			return r.onReconcileError(ctx, nil, nodeDrain, err)
 		}
 		return ctrl.Result{}, nil
@@ -154,7 +154,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return r.Client.Status().Update(ctx, nodeDrain)
 		})
 		if updateErr != nil {
-			r.logger.Error(err, "Failed to update NodeDrain Status")
+			r.logger.Error(updateErr, "Failed to update NodeDrain Status")
 			return r.onReconcileError(ctx, drainer, nodeDrain, updateErr)
 		}
 	}
@@ -179,6 +179,23 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 			r.logger.Error(err, "Unexpected error for the NodeName field", "NodeName", nodeName)
 			return false, err
 		}
+	}
+
+	if nodeDrain.Spec.NodeRole != node.Labels["role"] {
+		message := fmt.Sprintf("Node role mismatch: expected %s got %s", nodeDrain.Spec.NodeRole, node.Labels["role"])
+		r.logger.Info(message)
+		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
+		return true, nil
+	}
+
+	pattern := regexp.MustCompile(nodeDrain.Spec.VersionToDrainRegex)
+	if !pattern.MatchString(node.Status.NodeInfo.KubeletVersion) {
+		message := fmt.Sprintf("Node version mismatch: expected a value that satisfies %s got %s", nodeDrain.Spec.VersionToDrainRegex, node.Status.NodeInfo.KubeletVersion)
+		r.logger.Info(message)
+		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
+		return true, nil
 	}
 
 	if nodeDrain.Spec.DisableCordon {
@@ -294,7 +311,7 @@ func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context,
 
 	for _, nameAndNamespace := range nodeDrain.Status.PodsToBeEvicted {
 		pod := corev1.Pod{}
-		err := r.Client.Get(ctx, client.ObjectKey{Namespace: nameAndNamespace.Namespace, Name: nameAndNamespace.Name}, &pod)
+		err := r.Get(ctx, client.ObjectKey{Namespace: nameAndNamespace.Namespace, Name: nameAndNamespace.Name}, &pod)
 		if err != nil {
 			r.logger.Info(fmt.Sprintf("Failed to get pod %s in namespace %s", nameAndNamespace.Name, nameAndNamespace.Namespace))
 
@@ -322,7 +339,7 @@ func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *ge
 	podsBlocking := []string{}
 	// get a list of drainChecks
 	drainCheckList := &gezbcoukalphav1.DrainCheckList{}
-	err := r.Client.List(ctx, drainCheckList, &client.ListOptions{})
+	err := r.List(ctx, drainCheckList, &client.ListOptions{})
 	if err != nil {
 		return podsBlocking, err
 	}
@@ -355,7 +372,7 @@ func (r *NodeDrainReconciler) fetchNode(ctx context.Context, drainer *drain.Help
 
 func (r *NodeDrainReconciler) areAllNodesCordoned(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, error) {
 	nodeList := &corev1.NodeList{}
-	err := r.Client.List(ctx, nodeList, &client.ListOptions{})
+	err := r.List(ctx, nodeList, &client.ListOptions{})
 	if err != nil {
 		return false, err
 	}
@@ -496,7 +513,7 @@ func createDrainer(ctx context.Context, mgrConfig *rest.Config) (*drain.Helper, 
 		} else {
 			verbString = "Deleted"
 		}
-		msg := fmt.Sprintf("pod: %s:%s %s from node: %s", pod.ObjectMeta.Namespace, pod.ObjectMeta.Name, verbString, pod.Spec.NodeName)
+		msg := fmt.Sprintf("pod: %s:%s %s from node: %s", pod.Namespace, pod.Name, verbString, pod.Spec.NodeName)
 		klog.Info(msg)
 	}
 	return drainer, nil
@@ -505,7 +522,7 @@ func createDrainer(ctx context.Context, mgrConfig *rest.Config) (*drain.Helper, 
 // GetPodNameList returns a list of pod names from a pod list
 func GetPodNameList(pods []corev1.Pod) (result []string) {
 	for _, pod := range pods {
-		result = append(result, pod.ObjectMeta.Name)
+		result = append(result, pod.Name)
 	}
 	return result
 }
@@ -514,8 +531,8 @@ func GetPodNameList(pods []corev1.Pod) (result []string) {
 func GetNameSpaceAndName(pods []corev1.Pod) (result []gezbcoukalphav1.NamespaceAndName) {
 	for _, pod := range pods {
 		result = append(result, gezbcoukalphav1.NamespaceAndName{
-			Name:      pod.ObjectMeta.Name,
-			Namespace: pod.ObjectMeta.Namespace,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
 		})
 	}
 	return result

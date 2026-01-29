@@ -484,6 +484,97 @@ var _ = Describe("Node Drain", func() {
 
 		})
 	})
+
+	When("NodeDrain CR for a node that does not match the role", func() {
+		BeforeEach(func() {
+			node := getTestNode("node1", false)
+			node.Labels["role"] = "not-test-role"
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, node)
+
+			pod1 := getTestPod("pod1")
+			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+			pod2 := getTestPod("pod2")
+			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+			pod3 := getTestPod("pod3")
+			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, pod1)
+			DeferCleanup(k8sClient.Delete, ctx, pod2)
+			DeferCleanup(k8sClient.Delete, ctx, pod3)
+
+			nodeDrainCR = getTestNodeDrain(false, false)
+			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
+		})
+
+		It("should goto a failed state", func() {
+			nodeDrain := &gezbcoukalphav1.NodeDrain{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
+				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
+			}, timeout, interval).Should(Succeed())
+
+			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+
+			verifyEvent(events.EventReasonNodeNotFound, "Node role mismatch: expected test-role got not-test-role")
+
+			Expect(nodeDrain.Status.LastError).To(Equal(""))
+			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
+			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+
+		})
+	})
+
+	When("NodeDrain CR for a node that has version does not match the regex", func() {
+		BeforeEach(func() {
+			node := getTestNode("node1", false)
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, node)
+
+			pod1 := getTestPod("pod1")
+			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+			pod2 := getTestPod("pod2")
+			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+			pod3 := getTestPod("pod3")
+			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, pod1)
+			DeferCleanup(k8sClient.Delete, ctx, pod2)
+			DeferCleanup(k8sClient.Delete, ctx, pod3)
+
+			nodeDrainCR = getTestNodeDrain(false, false)
+			nodeDrainCR.Spec.VersionToDrainRegex = "^1.34.*$"
+			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
+		})
+
+		It("should goto a failed state", func() {
+			nodeDrain := &gezbcoukalphav1.NodeDrain{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
+				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
+			}, timeout, interval).Should(Succeed())
+
+			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+
+			verifyEvent(events.EventReasonNodeNotFound, "Node version mismatch: expected a value that satisfies ^1.34.*$ got 1.35.5-eks")
+
+			Expect(nodeDrain.Status.LastError).To(Equal(""))
+			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
+			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+
+		})
+	})
+
 })
 
 func getTestPod(podName string) *corev1.Pod {
@@ -521,7 +612,7 @@ func getTestNodeDrain(disableCordon bool, waitForRestart bool) *gezbcoukalphav1.
 		},
 		Spec: gezbcoukalphav1.NodeDrainSpec{
 			NodeName:             "node1",
-			VersionToDrainRegex:  "1.35.*",
+			VersionToDrainRegex:  "^1.35.*$",
 			NodeRole:             "test-role",
 			DisableCordon:        disableCordon,
 			WaitForPodsToRestart: waitForRestart,
