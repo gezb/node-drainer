@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/samber/lo"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,6 +62,7 @@ var (
 	testEnv       *envtest.Environment
 	cfg           *rest.Config
 	k8sClient     client.Client
+	k8sClientSet  *kubernetes.Clientset
 	fakeRecorder  *EventRecorder
 	r             *NodeDrainReconciler
 	statusChecker PodStatusChecker
@@ -134,7 +137,7 @@ func (e *EventRecorder) DetectedEvent(reason string, msg string) bool {
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
-
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting node-drainer unit test suite\n")
 	suiteConfig, reporterConfig := GinkgoConfiguration()
 	reporterConfig.Verbose = true
 	RunSpecs(t, "Controller Suite", suiteConfig, reporterConfig)
@@ -174,6 +177,10 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	k8sClientSet, err = kubernetes.NewForConfig(cfg)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sClientSet).NotTo(BeNil())
 
 	statusChecker = alwaysTruePodStatusChecker{}
 	fakeRecorder = NewEventRecorder()

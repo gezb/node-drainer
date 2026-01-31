@@ -8,7 +8,9 @@ type NodeDrainPhase string
 
 const (
 	// NodeDrainFinalizer is a finalizer for a NodeMaintenance CR deletion
-	NodeDrainFinalizer string = "co.uk.gezb,NodeDrain"
+	NodeDrainFinalizer string = "co.uk.gezb.NodeDrain"
+
+	NodeDrainAnnotation string = "co.uk.gezb.node-restart-controller"
 
 	NodeDrainPhasePending               NodeDrainPhase = "Pending"
 	NodeDrainPhaseCordoned              NodeDrainPhase = "Cordoned"
@@ -33,17 +35,14 @@ type NodeDrainSpec struct {
 	VersionToDrainRegex string `json:"versionToDrainRegex"`
 	// NodeRole is the nodes expected "role" label
 	NodeRole string `json:"nodeRole"`
-	// DisableCordon stop the controller cordoning the node
-	// +kubebuilder:validation:Optional
-	DisableCordon bool `json:"disableCordon"`
 	// WaitForPods waits for the evicted pods to be running again before completing
-	// +kubebuilder:validation:Optional
-	WaitForPodsToRestart bool `json:"waitForPodsToRestart"`
+	SkipWaitForPodsToRestart bool `json:"skipWaitForPodsToRestart"`
 }
 
 // NodeDrainStatus defines the observed state of NodeDrain.
 type NodeDrainStatus struct {
 	// Phase represents the progress of this nodeDrain
+	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Phase NodeDrainPhase `json:"phase"`
 	// The last time the status has been updated
 	LastUpdate metav1.Time `json:"lastUpdate,omitempty"`
@@ -51,13 +50,14 @@ type NodeDrainStatus struct {
 	LastError string `json:"lastError,omitempty"`
 	// PodsToBeEvicted is the list of pods for the controller needs to evict
 	PodsToBeEvicted []NamespaceAndName `json:"podsToBeEvicted,omitempty"`
-	// PendingPods is a list of pending pods for eviction
-	PendingPods []string `json:"pendingPods,omitempty"`
+	// PendingEvictionPods is a list of pods still to be evicted
+	PendingEvictionPods []string `json:"PendingEvictionPods,omitempty"`
+	// PodsToRestart is the list of pods that we are waiting to restart
+	PodsToRestart []NamespaceAndName `json:"PodsToRestart,omitempty"`
 	// TotalPods is the total number of all pods on the node from the start
-	// +operator-sdk:csv:customresourcedefinitions:type=status
 	TotalPods int `json:"totalPods,omitempty"`
 	// EvictionPods is the total number of pods up for eviction from the start
-	EvictionPodCount int `json:"evictionPods,omitempty"`
+	EvictionPodCount int `json:"evictionPods"`
 	// Percentage completion of draining the node
 	DrainProgress int `json:"drainProgress,omitempty"`
 	// PodsBlockingDrain is a list of pods that are blocking the draining of this node
@@ -67,7 +67,7 @@ type NodeDrainStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Phase of the NodeDrain"
-// +kubebuilder:printcolumn:name="Pods BlockingDrain",type="string",JSONPath=".status.podsblockingdrain",description="Pods that are blocking drain"
+// +kubebuilder:printcolumn:name="Pods BlockingDrain",type="string",JSONPath=".status.podsBlockingDrain",description="Pods that are blocking drain"
 
 // NodeDrain is the Schema for the nodedrains API.
 type NodeDrain struct {

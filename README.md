@@ -9,7 +9,6 @@ metadata:
   name: nodedrain-node1
 spec:
   nodeName: node1
-  disableCordon: false # optional
   waitForPodsToRestart: true # optional
 ```
 

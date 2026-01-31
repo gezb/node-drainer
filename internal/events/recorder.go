@@ -32,7 +32,6 @@ import (
 const (
 	EventReasonNodeNotFound            = "NodeNotFound"
 	EventReasonStatusUpdated           = "StatusUpdated"
-	EventReasonDrainBlockedByPods      = "DrainingBlocked"
 	EventReasonWaitingForPodsToRestart = "WaitingForPodsToRestart"
 )
 

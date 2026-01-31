@@ -6,7 +6,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	corev1 "k8s.io/api/core/v1"
+	apiErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,545 +39,547 @@ var _ = Describe("Node Drain", func() {
 		}
 		ClearEventsCache()
 	})
-	var nodeDrainCR *gezbcoukalphav1.NodeDrain
 
-	When("NodeDrain CR for a node that is empty", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
-
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
-		It("should goto a completed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
-
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
-
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-		})
+	AfterEach(func() {
+		statusChecker = alwaysTruePodStatusChecker{}
 	})
 
-	When("NodeDrain CR for a node that is empty, already cordened", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", true)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+	It("NodeDrain CR for a node that is empty", func() {
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node := getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
-		It("should goto a completed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
+		By("should goto a completed state")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
+		}, timeout, interval).Should(Succeed())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-
-		})
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		node, err = k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeFalse())
+		deleteNode("node1")
 	})
 
-	When("NodeDrain CR for a node that is not empty", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+	It("NodeDrain CR for a node that is empty, already cordened", func() {
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("pod2")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			pod3 := getTestPod("pod3")
-			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
-			// this will be done by the drain
-			// DeferCleanup(k8sClient.Delete, ctx, pod1)
+		By("Setup for test")
+		node := getTestNode("node1", true)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
+		nodeDrain := getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-		It("should goto a completed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
+		By("should goto a completed state")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
+		}, timeout, interval).Should(Succeed())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(3))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal([]gezbcoukalphav1.NamespaceAndName{
-				{
-					Namespace: testNamespace,
-					Name:      "pod1",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod2",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod3",
-				},
-			}))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
 
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
 
-	When("Drain gets blocked by a draincheck", func() {
+	It("NodeDrain CR for a node that is not empty", func() {
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node = getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+		pod1 := getTestPod("pod1")
+		Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+		pod2 := getTestPod("pod2")
+		Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+		pod3 := getTestPod("pod3")
+		Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+		// this will be done by the drain
+		// DeferCleanup(k8sClient.Delete, ctx, pod1)
+
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
+
+		By("should goto a completed state")
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
+		}, timeout, interval).Should(Succeed())
+
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
+
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(3))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal([]gezbcoukalphav1.NamespaceAndName{
+			{
+				Namespace: testNamespace,
+				Name:      "pod1",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod2",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod3",
+			},
+		}))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
+
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
+	})
+
+	It("Drain gets blocked by a draincheck", func() {
 		var blockpod *corev1.Pod
 		var blockpod2 *corev1.Pod
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node = getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("shouldnotblock-1")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			blockpod = getTestPod("block-1")
-			Expect(k8sClient.Create(ctx, blockpod)).To(Succeed())
-			blockpod2 = getTestPod("block-2")
-			Expect(k8sClient.Create(ctx, blockpod2)).To(Succeed())
+		pod1 := getTestPod("pod1")
+		Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+		pod2 := getTestPod("shouldnotblock-1")
+		Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+		blockpod = getTestPod("block-1")
+		Expect(k8sClient.Create(ctx, blockpod)).To(Succeed())
+		blockpod2 = getTestPod("block-2")
+		Expect(k8sClient.Create(ctx, blockpod2)).To(Succeed())
 
-			// this will be done by the drain
-			// DeferCleanup(k8sClient.Delete, ctx, pod1)
-			// DeferCleanup(k8sClient.Delete, ctx, pod2)
-			// DeferCleanup(k8sClient.Delete, ctx, drainPod1)
+		// this will be done by the drain
+		// DeferCleanup(k8sClient.Delete, ctx, pod1)
+		// DeferCleanup(k8sClient.Delete, ctx, pod2)
+		// DeferCleanup(k8sClient.Delete, ctx, drainPod1)
 
-			drainCheck := getTestDrainCheck()
-			Expect(k8sClient.Create(ctx, drainCheck)).To(Succeed())
-			// this will be done later in the test to complete the drain
-			DeferCleanup(k8sClient.Delete, ctx, drainCheck)
+		drainCheck := getTestDrainCheck()
+		Expect(k8sClient.Create(ctx, drainCheck)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "drain-check",
+			Namespace: testNamespace}, drainCheck)).To(Succeed())
 
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-		It(" should be blocked by pods block-1 and block-2", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhasePodsBlocking))
-			}, timeout, interval).Should(Succeed())
+		By("should be blocked by pods block-1 and block-2")
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "drain-check", Namespace: testNamespace}, drainCheck)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhasePodsBlocking))
+		}, timeout, interval).Should(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeDrain.Spec.NodeName}, node)).To(Succeed())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePodsBlocking)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePodsBlocking)
 
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal("block-1,block-2"))
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal("block-1,block-2"))
 
-			verifyEvent(events.EventReasonDrainBlockedByPods, "Node node1 is blocked from draining by pod: block-1")
-			verifyEvent(events.EventReasonDrainBlockedByPods, "Node node1 is blocked from draining by pod: block-2")
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(4))
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+		Expect(nodeDrain.Status.PendingEvictionPods).To(Equal([]string{"block-1", "block-2", "pod1", "shouldnotblock-1"}))
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(4))
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
-			Expect(nodeDrain.Status.PendingPods).To(Equal([]string{"block-1", "block-2", "pod1", "shouldnotblock-1"}))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+		By("Deleting the blocking block-1")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(blockpod), blockpod)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, blockpod)).To(Succeed())
 
-			By("Deleting the blocking block-1")
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(blockpod), blockpod)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, blockpod)).To(Succeed())
+		By("Check the status has been updated")
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.PendingEvictionPods).To(HaveLen(3))
+		}, timeout, interval).Should(Succeed())
 
-			By("Check the status has been updated")
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.PendingPods).To(HaveLen(3))
-			}, timeout, interval).Should(Succeed())
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(4))
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(BeNil())
+		Expect(nodeDrain.Status.PendingEvictionPods).To(Equal([]string{"block-2", "pod1", "shouldnotblock-1"}))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(25))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal("block-2"))
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(4))
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeNil())
-			Expect(nodeDrain.Status.PendingPods).To(Equal([]string{"block-2", "pod1", "shouldnotblock-1"}))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(25))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal("block-2"))
+		By("Deleting the blocking block-2")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(blockpod2), blockpod2)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, blockpod2)).To(Succeed())
 
-			By("Deleting the blocking block-2")
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(blockpod2), blockpod2)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, blockpod2)).To(Succeed())
+		By("The drain should run to completion")
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
+		}, timeout, interval).Should(Succeed())
 
-			By("The drain should run to completion")
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(4))
+		podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
+			{
+				Namespace: testNamespace,
+				Name:      "pod1",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "shouldnotblock-1",
+			},
+		}
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(4))
-			podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
-				{
-					Namespace: testNamespace,
-					Name:      "pod1",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "shouldnotblock-1",
-				},
-			}
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(4))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
 
-	When("Drain does not run if another node for the same role & version has not been cordened ", func() {
-		var node2 *corev1.Node
-		BeforeEach(func() {
-			node := getTestNode("node1", true)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
-			node2 = getTestNode("uncodened-node", false)
-			Expect(k8sClient.Create(ctx, node2)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node2)
+	It("NodeDrain CR for a node that is not empty", func() {
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node = getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			// this will be done by the drain
-			// DeferCleanup(k8sClient.Delete, ctx, pod1)
+		pod1 := getTestPod("pod1")
+		Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+		pod2 := getTestPod("pod2")
+		Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+		pod3 := getTestPod("pod3")
+		Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+		// this will be done by the drain
+		// DeferCleanup(k8sClient.Delete, ctx, pod1)
+		// DeferCleanup(k8sClient.Delete, ctx, pod2)
+		// DeferCleanup(k8sClient.Delete, ctx, pod3)
 
-			nodeDrainCR = getTestNodeDrain(true, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-		It("should stop at OtherNodesNotCordoned when another node is not cordened", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned))
-			}, timeout, interval).Should(Succeed())
+		By("should goto a completed state")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
+		}, timeout, interval).Should(Succeed())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(1))
-			podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
-				{
-					Namespace: testNamespace,
-					Name:      "pod1",
-				},
-			}
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeNil())
-			Expect(nodeDrain.Status.PendingPods).To(Equal([]string{"pod1"}))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(1))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(3))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
+		podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
+			{
+				Namespace: testNamespace,
+				Name:      "pod1",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod2",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod3",
+			},
+		}
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
 
-			By("Cordoning the node, the drain can complete")
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(node2), node2)).To(Succeed())
-			node2.Spec.Unschedulable = true
-			Expect(k8sClient.Update(ctx, node2)).To(Succeed())
-
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
-
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
-
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(1))
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(1))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
 
-	When("NodeDrain CR for a node that is not empty", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+	It("NodeDrain CR for a node that does not exist", func() {
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("pod2")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			pod3 := getTestPod("pod3")
-			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
-			// this will be done by the drain
-			// DeferCleanup(k8sClient.Delete, ctx, pod1)
-			// DeferCleanup(k8sClient.Delete, ctx, pod2)
-			// DeferCleanup(k8sClient.Delete, ctx, pod3)
+		By("should goto a failed state as the node does not exist")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
+		}, timeout, interval).Should(Succeed())
 
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
-		It("should goto a completed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseCompleted))
-			}, timeout, interval).Should(Succeed())
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCompleted)
+		verifyEvent(events.EventReasonNodeNotFound, "Node: node1 not found")
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(3))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
-			podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
-				{
-					Namespace: testNamespace,
-					Name:      "pod1",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod2",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod3",
-				},
-			}
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
 
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
 	})
 
-	When("NodeDrain CR for a node that does not exist", func() {
-		BeforeEach(func() {
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
-		It("should goto a failed state as the node does not exist", func() {
-			By("check nodeDrain CR status was Failed")
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
-			}, timeout, interval).Should(Succeed())
+	It("NodeDrain CR for a node that is not empty, waits for pods to restart when requested", func() {
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+		By("Setup for test")
+		statusChecker = neverTruePodStatusChecker{}
+		node = getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			verifyEvent(events.EventReasonNodeNotFound, "Node: node1 not found")
+		pod1 := getTestPod("pod1")
+		Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+		pod2 := getTestPod("pod2")
+		Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+		pod3 := getTestPod("pod3")
+		Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+		// this will be done by the drain
+		// DeferCleanup(k8sClient.Delete, ctx, pod1)
+		// DeferCleanup(k8sClient.Delete, ctx, pod2)
+		// DeferCleanup(k8sClient.Delete, ctx, pod3)
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-		})
+		nodeDrain = getTestNodeDrain(true)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
+
+		By("should goto WaitForPodsToRestartStatus")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart))
+		}, timeout, interval).Should(Succeed())
+
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart)
+
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(3))
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
+		podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
+			{
+				Namespace: testNamespace,
+				Name:      "pod1",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod2",
+			},
+			{
+				Namespace: testNamespace,
+				Name:      "pod3",
+			},
+		}
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(Equal([]string{"pod1", "pod2", "pod3"}))
+		Expect(nodeDrain.Status.PodsToRestart).To(Equal(podsToBeEvicted))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeTrue())
+
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
 
-	When("NodeDrain CR for a node that is not empty, waits for pods to restart when requested", func() {
-		BeforeEach(func() {
-			statusChecker = neverTruePodStatusChecker{}
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+	It("NodeDrain CR for a node that does not match the role", func() {
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node = getTestNode("node1", false)
+		node.Labels["role"] = "not-test-role"
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("pod2")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			pod3 := getTestPod("pod3")
-			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
-			// this will be done by the drain
-			// DeferCleanup(k8sClient.Delete, ctx, pod1)
-			// DeferCleanup(k8sClient.Delete, ctx, pod2)
-			// DeferCleanup(k8sClient.Delete, ctx, pod3)
+		nodeDrain = getTestNodeDrain(false)
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-			nodeDrainCR = getTestNodeDrain(false, true)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
+		By("should goto a failed state")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
+		}, timeout, interval).Should(Succeed())
 
-		AfterEach(func() {
-			statusChecker = alwaysTruePodStatusChecker{}
-		})
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
 
-		It("should goto WaitForPodsToRestartStatus", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
+		verifyEvent(events.EventReasonNodeNotFound, "Node role mismatch: expected test-role got not-test-role")
 
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart))
-			}, timeout, interval).Should(Succeed())
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeFalse())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseCordoned)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseDraining)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart)
-
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(3))
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(3))
-			podsToBeEvicted := []gezbcoukalphav1.NamespaceAndName{
-				{
-					Namespace: testNamespace,
-					Name:      "pod1",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod2",
-				},
-				{
-					Namespace: testNamespace,
-					Name:      "pod3",
-				},
-			}
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(Equal(podsToBeEvicted))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(100))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
 
-	When("NodeDrain CR for a node that does not match the role", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			node.Labels["role"] = "not-test-role"
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
+	It("NodeDrain CR for a node that has version does not match the regex", func() {
+		var node *corev1.Node
+		var nodeDrain *gezbcoukalphav1.NodeDrain
+		By("Setup for test")
+		node = getTestNode("node1", false)
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("pod2")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			pod3 := getTestPod("pod3")
-			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, pod1)
-			DeferCleanup(k8sClient.Delete, ctx, pod2)
-			DeferCleanup(k8sClient.Delete, ctx, pod3)
+		pod1 := getTestPod("pod1")
+		Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
+		pod2 := getTestPod("pod2")
+		Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
+		pod3 := getTestPod("pod3")
+		Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
+		DeferCleanup(k8sClient.Delete, ctx, pod1)
+		DeferCleanup(k8sClient.Delete, ctx, pod2)
+		DeferCleanup(k8sClient.Delete, ctx, pod3)
 
-			nodeDrainCR = getTestNodeDrain(false, false)
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
+		nodeDrain = getTestNodeDrain(false)
+		nodeDrain.Spec.VersionToDrainRegex = "^1.34.*$"
+		Expect(k8sClient.Create(ctx, nodeDrain)).To(Succeed())
 
-		It("should goto a failed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
-			}, timeout, interval).Should(Succeed())
+		By("should goto a failed state")
+		nodeDrain = &gezbcoukalphav1.NodeDrain{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+			g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
+		}, timeout, interval).Should(Succeed())
 
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
+		verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
 
-			verifyEvent(events.EventReasonNodeNotFound, "Node role mismatch: expected test-role got not-test-role")
+		verifyEvent(events.EventReasonNodeNotFound, "Node version mismatch: expected a value that satisfies ^1.34.*$ got 1.35.5-eks")
 
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		Expect(nodeDrain.Status.LastError).To(Equal(""))
+		Expect(nodeDrain.Status.TotalPods).To(Equal(0))
+		Expect(nodeDrain.Status.PendingEvictionPods).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
+		Expect(nodeDrain.Status.PodsToRestart).To(BeEmpty())
+		Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
+		Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
+		Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
+		node, err := k8sClientSet.CoreV1().Nodes().Get(ctx, "node1", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation)).To(BeFalse())
 
-		})
+		By("Cleanup after test")
+		// if these are left to deferCleanup() we get timing issues
+		// where the node does not exist when the controller comes to delete the annotation
+		deleteNodeDrain()
+		deleteNode("node1")
 	})
-
-	When("NodeDrain CR for a node that has version does not match the regex", func() {
-		BeforeEach(func() {
-			node := getTestNode("node1", false)
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, node)
-
-			pod1 := getTestPod("pod1")
-			Expect(k8sClient.Create(ctx, pod1)).To(Succeed())
-			pod2 := getTestPod("pod2")
-			Expect(k8sClient.Create(ctx, pod2)).To(Succeed())
-			pod3 := getTestPod("pod3")
-			Expect(k8sClient.Create(ctx, pod3)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, pod1)
-			DeferCleanup(k8sClient.Delete, ctx, pod2)
-			DeferCleanup(k8sClient.Delete, ctx, pod3)
-
-			nodeDrainCR = getTestNodeDrain(false, false)
-			nodeDrainCR.Spec.VersionToDrainRegex = "^1.34.*$"
-			Expect(k8sClient.Create(ctx, nodeDrainCR)).To(Succeed())
-			DeferCleanup(k8sClient.Delete, ctx, nodeDrainCR)
-		})
-
-		It("should goto a failed state", func() {
-			nodeDrain := &gezbcoukalphav1.NodeDrain{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeDrainCR), nodeDrain)).To(Succeed())
-				g.Expect(nodeDrain.Status.Phase).To(Equal(gezbcoukalphav1.NodeDrainPhaseFailed))
-			}, timeout, interval).Should(Succeed())
-
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhasePending)
-			verifyStatusEvent(gezbcoukalphav1.NodeDrainPhaseFailed)
-
-			verifyEvent(events.EventReasonNodeNotFound, "Node version mismatch: expected a value that satisfies ^1.34.*$ got 1.35.5-eks")
-
-			Expect(nodeDrain.Status.LastError).To(Equal(""))
-			Expect(nodeDrain.Status.TotalPods).To(Equal(0))
-			Expect(nodeDrain.Status.PendingPods).To(BeEmpty())
-			Expect(nodeDrain.Status.PodsToBeEvicted).To(BeEmpty())
-			Expect(nodeDrain.Status.EvictionPodCount).To(Equal(0))
-			Expect(nodeDrain.Status.DrainProgress).To(Equal(0))
-			Expect(nodeDrain.Status.PodsBlockingDrain).To(Equal(""))
-
-		})
-	})
-
 })
+
+func deleteNode(name string) {
+	ExpectWithOffset(1, k8sClientSet.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})).To(Succeed())
+	EventuallyWithOffset(1, func(g Gomega) {
+		_, err := k8sClientSet.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		g.Expect(apiErrors.IsNotFound(err)).To(BeTrue())
+	}, timeout, interval).Should(Succeed())
+}
+
+func deleteNodeDrain() {
+	nodeDrain := &gezbcoukalphav1.NodeDrain{}
+	ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)).To(Succeed())
+	ExpectWithOffset(1, k8sClient.Delete(ctx, nodeDrain)).To(Succeed())
+	EventuallyWithOffset(1, func(g Gomega) {
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "node-drain", Namespace: testNamespace}, nodeDrain)
+		g.Expect(apiErrors.IsNotFound(err)).To(BeTrue())
+	}, timeout, interval).Should(Succeed())
+}
 
 func getTestPod(podName string) *corev1.Pod {
 	return &corev1.Pod{
@@ -604,18 +608,17 @@ func getTestPod(podName string) *corev1.Pod {
 	}
 }
 
-func getTestNodeDrain(disableCordon bool, waitForRestart bool) *gezbcoukalphav1.NodeDrain {
+func getTestNodeDrain(waitForRestart bool) *gezbcoukalphav1.NodeDrain {
 	return &gezbcoukalphav1.NodeDrain{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "node-drain",
 			Namespace: testNamespace,
 		},
 		Spec: gezbcoukalphav1.NodeDrainSpec{
-			NodeName:             "node1",
-			VersionToDrainRegex:  "^1.35.*$",
-			NodeRole:             "test-role",
-			DisableCordon:        disableCordon,
-			WaitForPodsToRestart: waitForRestart,
+			NodeName:                 "node1",
+			VersionToDrainRegex:      "^1.35.*$",
+			NodeRole:                 "test-role",
+			SkipWaitForPodsToRestart: !waitForRestart,
 		},
 	}
 }

@@ -30,6 +30,9 @@ const worker2Node = "k3d-nd-e2e-agent-1"
 // worker3Node is the name of the node reserved for further testing
 const worker3Node = "k3d-nd-e2e-agent-2"
 
+// worker4Node is the name of the node reserved for further testing
+const worker4Node = "k3d-nd-e2e-agent-3"
+
 var (
 	// Optional Environment Variables:
 	// - PROMETHEUS_INSTALL_SKIP=true: Skips Prometheus Operator installation during test setup.
@@ -43,10 +46,11 @@ var (
 	isPrometheusOperatorAlreadyInstalled = false
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
-
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	projectImage = "node-drain-controller:e2e-tests"
+	// testNodes is an array of the nodes that are reserved for drain testing
+	testNodes = []string{worker2Node, worker3Node, worker4Node}
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -65,15 +69,21 @@ var _ = BeforeSuite(func() {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to set KUBECONFIG environment variable")
 
 	By("Labeling and cordening the test nodes so only our workloads run on them")
+
 	// worker2
 	utils.LabelNode(worker2Node, k8sRole)
 	utils.CordonNode(worker2Node)
+
 	// worker 3
 	utils.LabelNode(worker3Node, k8sRole)
 	utils.CordonNode(worker3Node)
 
+	// worker 4
+	utils.LabelNode(worker4Node, k8sRole)
+	utils.CordonNode(worker4Node)
+
 	By("Draining the test nodes to ensure a clean state")
-	utils.DrainNodes([]string{worker2Node, worker3Node})
+	utils.DrainNodes([]string{worker2Node, worker3Node, worker4Node})
 
 	By("Ensure that Prometheus is enabled")
 	_ = utils.UncommentCode("config/default/kustomization.yaml", "#- ../prometheus", "#")

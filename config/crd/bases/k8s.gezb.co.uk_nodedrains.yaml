@@ -20,7 +20,7 @@ spec:
       name: Phase
       type: string
     - description: Pods that are blocking drain
-      jsonPath: .status.podsblockingdrain
+      jsonPath: .status.podsBlockingDrain
       name: Pods BlockingDrain
       type: string
     name: v1
@@ -48,31 +48,45 @@ spec:
           spec:
             description: NodeDrainSpec defines the desired state of NodeDrain.
             properties:
-              disableCordon:
-                description: DisableCordon stop the controller cordoning the node
-                type: boolean
               nodeName:
                 description: NodeName is the name of the node to drain
                 type: string
               nodeRole:
                 description: NodeRole is the nodes expected "role" label
                 type: string
+              skipWaitForPodsToRestart:
+                description: WaitForPods waits for the evicted pods to be running
+                  again before completing
+                type: boolean
               versionToDrainRegex:
                 description: VersionToDrainRegex is a regex to match the expected
                   kubernetes version that we want to Drain
                 type: string
-              waitForPodsToRestart:
-                description: WaitForPods waits for the evicted pods to be running
-                  again before completing
-                type: boolean
             required:
             - nodeName
             - nodeRole
+            - skipWaitForPodsToRestart
             - versionToDrainRegex
             type: object
           status:
             description: NodeDrainStatus defines the observed state of NodeDrain.
             properties:
+              PendingEvictionPods:
+                description: PendingEvictionPods is a list of pods still to be evicted
+                items:
+                  type: string
+                type: array
+              PodsToRestart:
+                description: PodsToRestart is the list of pods that we are waiting
+                  to restart
+                items:
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                  type: object
+                type: array
               drainProgress:
                 description: Percentage completion of draining the node
                 type: integer
@@ -88,11 +102,6 @@ spec:
                 description: The last time the status has been updated
                 format: date-time
                 type: string
-              pendingPods:
-                description: PendingPods is a list of pending pods for eviction
-                items:
-                  type: string
-                type: array
               phase:
                 description: Phase represents the progress of this nodeDrain
                 type: string
@@ -116,6 +125,7 @@ spec:
                   from the start
                 type: integer
             required:
+            - evictionPods
             - phase
             type: object
         type: object
