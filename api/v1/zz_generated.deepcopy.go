@@ -195,9 +195,14 @@ func (in *NodeDrainStatus) DeepCopyInto(out *NodeDrainStatus) {
 		*out = make([]NamespaceAndName, len(*in))
 		copy(*out, *in)
 	}
-	if in.PendingPods != nil {
-		in, out := &in.PendingPods, &out.PendingPods
+	if in.PendingEvictionPods != nil {
+		in, out := &in.PendingEvictionPods, &out.PendingEvictionPods
 		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PodsToRestart != nil {
+		in, out := &in.PodsToRestart, &out.PodsToRestart
+		*out = make([]NamespaceAndName, len(*in))
 		copy(*out, *in)
 	}
 }

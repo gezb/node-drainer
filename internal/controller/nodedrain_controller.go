@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,7 +72,6 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
-			r.logger.Info("NodeDrain not found", "name", req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
@@ -79,20 +79,42 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	if !controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && nodeDrain.DeletionTimestamp.IsZero() {
-		// Add finalizer when object is created
-		controllerutil.AddFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
-
-	} else if controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) && !nodeDrain.DeletionTimestamp.IsZero() {
-		// The object is being deleted
-
-		// Do nothing special on deletion for now
-
-		// Remove finalizer
-		controllerutil.RemoveFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
-		if err := r.Update(ctx, nodeDrain); err != nil {
-			return r.onReconcileError(ctx, nil, nodeDrain, err)
+	if nodeDrain.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) {
+			controllerutil.AddFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
+			if err := r.Update(ctx, nodeDrain); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) {
+			//	Remove annotation
+			drainer, err := createDrainer(ctx, r.MgrConfig)
+			if err != nil {
+				return ctrl.Result{Requeue: true}, err
+			}
+			node, err := r.fetchNode(ctx, drainer, nodeDrain.Spec.NodeName)
+			if err != nil {
+				if !apiErrors.IsNotFound(err) {
+					return ctrl.Result{Requeue: true}, err
+				}
+			}
+			if node != nil {
+				if metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation) {
+					delete(node.Annotations, gezbcoukalphav1.NodeDrainAnnotation)
+					if err := r.Update(ctx, node); err != nil {
+						return ctrl.Result{Requeue: true}, err
+					}
+				}
+			}
+			// remove our finalizer from the list and update it.
+			controllerutil.RemoveFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer)
+			if err := r.Update(ctx, nodeDrain); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Stop reconciliation as the item is being deleted
 		return ctrl.Result{}, nil
 	}
 
@@ -118,7 +140,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// switch on status
 	switch nodeDrain.Status.Phase {
 	case gezbcoukalphav1.NodeDrainPhasePending:
-		needUpdate, err = r.reconcilePending(ctx, drainer, nodeDrain)
+		needsRequeue, needUpdate, err = r.reconcilePending(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseCordoned:
 		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhasePodsBlocking:
@@ -130,8 +152,8 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		needsRequeue, drainError, err = r.reconcileDraining(drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart:
 		needUpdate = true
-		needsRequeue = r.reconcileWaitForPodsToRestart(ctx, nodeDrain)
-
+		needsRequeue = true
+		err = r.reconcileWaitForPodsToRestart(ctx, drainer, nodeDrain)
 	}
 
 	if err != nil {
@@ -159,25 +181,25 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 	if needsRequeue {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{Requeue: true, RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }
 
 // reconcilePending checks the node exists, cordens the node if it needs to and updated
-func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, error) {
+func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
 	nodeName := nodeDrain.Spec.NodeName
 	node, err := r.fetchNode(ctx, drainer, nodeName)
 	if err != nil {
 		if apiErrors.IsNotFound(err) {
-			r.logger.Error(err, "Didn't find a node matching the NodeName field", "NodeName", nodeName)
+			r.logger.Info("Didn't find a node matching the NodeName field", "NodeName", nodeName)
 			message := fmt.Sprintf("Node: %s not found", nodeName)
 			publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-			return true, nil
+			return false, true, nil
 		} else {
 			r.logger.Error(err, "Unexpected error for the NodeName field", "NodeName", nodeName)
-			return false, err
+			return true, false, err
 		}
 	}
 
@@ -186,7 +208,7 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		r.logger.Info(message)
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-		return true, nil
+		return false, true, nil
 	}
 
 	pattern := regexp.MustCompile(nodeDrain.Spec.VersionToDrainRegex)
@@ -195,18 +217,20 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		r.logger.Info(message)
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-		return true, nil
+		return false, true, nil
 	}
 
-	if nodeDrain.Spec.DisableCordon {
-		r.logger.Info("NOT Cordoning node", "node", nodeName)
-	} else {
-		if !node.Spec.Unschedulable {
-			// cordon node
-			r.logger.Info("Cordoning node", "node", nodeName)
-			if err = drain.RunCordonOrUncordon(drainer, node, true); err != nil {
-				return false, err
-			}
+	// Add Annotation
+	metav1.SetMetaDataAnnotation(&node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation, "true")
+	if err := r.Update(ctx, node); err != nil {
+		return true, false, err
+	}
+
+	if !node.Spec.Unschedulable {
+		// cordon node
+		r.logger.Info("Cordoning node", "node", nodeName)
+		if err = drain.RunCordonOrUncordon(drainer, node, true); err != nil {
+			return true, false, err
 		}
 	}
 
@@ -215,40 +239,23 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 			FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeDrain.Spec.NodeName}).String(),
 		})
 	if err != nil {
-		return false, err
+		return true, false, err
 	}
 	nodeDrain.Status.TotalPods = len(podlist.Items)
 
 	err = r.updatePendingPodCount(drainer, nodeDrain)
-	nodeDrain.Status.EvictionPodCount = len(nodeDrain.Status.PendingPods)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
+	nodeDrain.Status.EvictionPodCount = len(nodeDrain.Status.PendingEvictionPods)
 	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCordoned)
 
-	return true, nil
+	return false, true, nil
 }
 
 // reconcileCordoned Checks that no pods exist that block draining this node & Checks all nodes for this k8s version&role are cordened,
 // once both are true update status to Draining
 func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
-	// update status with pods to be deleted
-	// ignore updated here we need to save the CR anyway
-	err := r.updatePendingPodCount(drainer, nodeDrain)
-	if err != nil {
-		return false, true, err
-	}
-
-	podsBlocking, err := r.getBlockingPods(ctx, nodeDrain)
-	if err != nil {
-		return false, false, err
-	}
-	nodeDrain.Status.PodsBlockingDrain = strings.Join(podsBlocking, ",")
-	if len(podsBlocking) > 0 {
-		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhasePodsBlocking)
-		// requeue this request so we check when the blocking pod(s) have been removed
-		return true, true, nil
-	}
 
 	allNodesCordoned, err := r.areAllNodesCordoned(ctx, nodeDrain)
 	if err != nil {
@@ -259,57 +266,83 @@ func (r *NodeDrainReconciler) reconcileCordoned(ctx context.Context, drainer *dr
 		// requeue this request so we check when the blocking pod(s) have been removed
 		return true, true, nil
 	}
+
+	// update status with pods to be deleted now all the nodes we expect are cordoned
+	// ignore updated here we need to save the CR anyway
+	err = r.updatePendingPodCount(drainer, nodeDrain)
+	if err != nil {
+		return false, true, err
+	}
+
+	podsBlocking, err := r.getBlockingPods(ctx, nodeDrain)
+	if err != nil {
+		return false, false, err
+	}
+	podsBlockingString := strings.Join(podsBlocking, ",")
+	if podsBlockingString != nodeDrain.Status.PodsBlockingDrain {
+		r.logger.Info(fmt.Sprintf("Pods blocking drain for node %s are [%s]", nodeDrain.Spec.NodeName, podsBlockingString))
+		nodeDrain.Status.PodsBlockingDrain = podsBlockingString
+	}
+	if len(podsBlocking) > 0 {
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhasePodsBlocking)
+		// requeue this request so we check when the blocking pod(s) have been removed
+		return true, true, nil
+	}
+
 	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseDraining)
-	return true, false, nil
+	return true, true, nil
 }
 
 // reconcileDraining Drains the given node
 func (r *NodeDrainReconciler) reconcileDraining(drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
-	if nodeDrain.Status.Phase == gezbcoukalphav1.NodeDrainPhaseDraining {
+	pendingList, errlist := drainer.GetPodsForDeletion(nodeDrain.Spec.NodeName)
+	if errlist != nil {
+		return false, false, fmt.Errorf("failed to get pods for eviction while initializing status: %v", errlist)
+	}
+	if pendingList != nil {
+		nodeDrain.Status.PodsToBeEvicted = GetNameSpaceAndName(pendingList.Pods())
+	}
+	if !nodeDrain.Spec.SkipWaitForPodsToRestart {
+		// populate the list of pods we need to wait for
+		nodeDrain.Status.PodsToRestart = GetNameSpaceAndName(pendingList.Pods())
+		r.logger.Info(fmt.Sprintf("Pods to wait to restart on node %s - init to  %v", nodeDrain.Spec.NodeName, nodeDrain.Status.PodsToRestart))
+	}
+	nodeName := nodeDrain.Spec.NodeName
+	r.logger.Info(fmt.Sprintf("Evict all Pods from Node %s", nodeName), "nodeName", nodeName)
+	if err := drain.RunNodeDrain(drainer, nodeName); err != nil {
+		r.logger.Info("Not all pods evicted", "nodeName", nodeName, "error", err)
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
+		// ignore updated here we need to save the CR anyway
+		err = r.updatePendingPodCount(drainer, nodeDrain)
+		if err != nil {
+			return false, true, err
+		}
+		return false, true, nil
+	}
 
-		pendingList, errlist := drainer.GetPodsForDeletion(nodeDrain.Spec.NodeName)
-		if errlist != nil {
-			return false, false, fmt.Errorf("failed to get pods for eviction while initializing status: %v", errlist)
-		}
-		if pendingList != nil {
-			nodeDrain.Status.PodsToBeEvicted = GetNameSpaceAndName(pendingList.Pods())
-		}
-		nodeName := nodeDrain.Spec.NodeName
-		r.logger.Info(fmt.Sprintf("Evict all Pods from Node %s", nodeName), "nodeName", nodeName)
-		if err := drain.RunNodeDrain(drainer, nodeName); err != nil {
-			r.logger.Info("Not all pods evicted", "nodeName", nodeName, "error", err)
-			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-			// ignore updated here we need to save the CR anyway
-			err = r.updatePendingPodCount(drainer, nodeDrain)
-			if err != nil {
-				return false, true, err
-			}
-			return false, true, nil
-		}
+	if nodeDrain.Spec.SkipWaitForPodsToRestart {
 		err := r.updatePendingPodCount(drainer, nodeDrain)
 		if err != nil {
 			return false, false, err
 		}
 		nodeDrain.Status.DrainProgress = 100
-
-	}
-	if nodeDrain.Spec.WaitForPodsToRestart {
-		message := fmt.Sprintf("Waiting for %d pod(s) to restart", len(nodeDrain.Status.PodsToBeEvicted))
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
+		return false, false, nil
+	} else {
+		message := fmt.Sprintf("Waiting for [%v] pod(s) to restart", nodeDrain.Status.PodsToRestart)
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeNormal, events.EventReasonWaitingForPodsToRestart, message)
 		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart)
 		// requeue to wait for the pods to be running
 		return true, true, nil
-	} else {
-		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
-		return false, false, nil
 	}
 }
 
 // reconcileWaitForPodsToRestart wiats for all evicted pods to be running again
-func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) bool {
-	allPodsRunning := false
+func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) error {
+	r.logger.Info(fmt.Sprintf("ReconcileWaitForRestarts() for  node %s - init to  %v", nodeDrain.Spec.NodeName, nodeDrain.Status.PodsToRestart))
 
-	for _, nameAndNamespace := range nodeDrain.Status.PodsToBeEvicted {
+	runningPods := []string{}
+	for _, nameAndNamespace := range nodeDrain.Status.PodsToRestart {
 		pod := corev1.Pod{}
 		err := r.Get(ctx, client.ObjectKey{Namespace: nameAndNamespace.Namespace, Name: nameAndNamespace.Name}, &pod)
 		if err != nil {
@@ -318,21 +351,32 @@ func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context,
 		} else {
 			// check if the pod is running
 			if !r.PodStatusChecker.CheckStatus(&pod) {
-				r.logger.Info("Pod not running yet", "Pod.Namespace", nameAndNamespace.Namespace, "Pod.Name", nameAndNamespace.Name)
-				allPodsRunning = false
+				r.logger.Info("Pod(s) not running yet", "Pod.Namespace", nameAndNamespace.Namespace, "pod.Name", nameAndNamespace.Name)
 			} else {
-				r.logger.Info("Pod running", "Pod.Namespace", nameAndNamespace.Namespace, "Pod.Name", nameAndNamespace.Name)
-				allPodsRunning = true
+				r.logger.Info("Pod(s) running", "Pod.Namespace", nameAndNamespace.Namespace, "pod.Name", nameAndNamespace.Name)
+				runningPods = append(runningPods, nameAndNamespace.Name)
 			}
 		}
 	}
 
-	if allPodsRunning {
-		r.logger.Info("All pods running, updating status to complete")
-		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
-		return false
+	for _, podName := range runningPods {
+		nodeDrain.Status.PodsToRestart = slices.DeleteFunc(nodeDrain.Status.PodsToRestart, func(cmp gezbcoukalphav1.NamespaceAndName) bool {
+			return cmp.Name == podName
+		})
 	}
-	return true
+	r.logger.Info(fmt.Sprintf("%s Pods are now down to  %v", nodeDrain.Spec.NodeName, nodeDrain.Status.PodsToRestart))
+
+	if len(nodeDrain.Status.PodsToRestart) == 0 {
+		r.logger.Info("All pods running, updating status to complete")
+		err := r.updatePendingPodCount(drainer, nodeDrain)
+		if err != nil {
+			return err
+		}
+		nodeDrain.Status.DrainProgress = 100
+		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCompleted)
+		return nil
+	}
+	return nil
 }
 
 func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) ([]string, error) {
@@ -345,12 +389,8 @@ func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *ge
 	}
 	for _, drainCheck := range drainCheckList.Items {
 		pattern := regexp.MustCompile(drainCheck.Spec.PodRegex)
-		for _, podName := range nodeDrain.Status.PendingPods {
+		for _, podName := range nodeDrain.Status.PendingEvictionPods {
 			if pattern.MatchString(podName) {
-				blockingMessage := fmt.Sprintf("Node %s is blocked from draining by pod: %s", nodeDrain.Spec.NodeName, podName)
-				r.logger.Info(blockingMessage)
-				publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonDrainBlockedByPods, blockingMessage)
-				r.logger.Info(fmt.Sprintf("Node %s is blocked from draining by pod: %s", nodeDrain.Spec.NodeName, podName))
 				podsBlocking = append(podsBlocking, podName)
 			}
 		}
@@ -361,10 +401,10 @@ func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *ge
 func (r *NodeDrainReconciler) fetchNode(ctx context.Context, drainer *drain.Helper, nodeName string) (*corev1.Node, error) {
 	node, err := drainer.Client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil && apiErrors.IsNotFound(err) {
-		r.logger.Error(err, "Node cannot be found", "nodeName", nodeName)
+		r.logger.Info("Node cannot be found", "nodeName", nodeName)
 		return nil, err
 	} else if err != nil {
-		r.logger.Error(err, "Failed to get node", "nodeName", nodeName)
+		r.logger.Info("Failed to get node", "nodeName", nodeName)
 		return nil, err
 	}
 	return node, nil
@@ -382,7 +422,8 @@ func (r *NodeDrainReconciler) areAllNodesCordoned(ctx context.Context, nodeDrain
 	for _, node := range nodeList.Items {
 		if node.Name != nodeDrain.Spec.NodeName && // ignore ourselves
 			node.Labels["role"] == nodeDrain.Spec.NodeRole &&
-			pattern.MatchString(node.Status.NodeInfo.KubeletVersion) {
+			pattern.MatchString(node.Status.NodeInfo.KubeletVersion) &&
+			metav1.HasAnnotation(node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation) {
 			if !node.Spec.Unschedulable {
 				unschedulable = false
 			}
@@ -398,12 +439,12 @@ func (r *NodeDrainReconciler) updatePendingPodCount(drainer *drain.Helper, nodeD
 		return fmt.Errorf("failed to get pods for eviction while initializing status: %v", errlist)
 	}
 	if pendingList != nil {
-		nodeDrain.Status.PendingPods = GetPodNameList(pendingList.Pods())
+		nodeDrain.Status.PendingEvictionPods = GetPodNameList(pendingList.Pods())
 	} else {
-		nodeDrain.Status.PendingPods = []string{}
+		nodeDrain.Status.PendingEvictionPods = []string{}
 	}
 	if nodeDrain.Status.EvictionPodCount > 0 {
-		nodeDrain.Status.DrainProgress = (nodeDrain.Status.EvictionPodCount - len(nodeDrain.Status.PendingPods)) * 100 / nodeDrain.Status.EvictionPodCount
+		nodeDrain.Status.DrainProgress = (nodeDrain.Status.EvictionPodCount - len(nodeDrain.Status.PendingEvictionPods)) * 100 / nodeDrain.Status.EvictionPodCount
 	}
 	return nil
 }
@@ -415,9 +456,9 @@ func (r *NodeDrainReconciler) onReconcileErrorWithRequeue(ctx context.Context, d
 	if nodeDrain.Spec.NodeName != "" {
 		pendingList, _ := drainer.GetPodsForDeletion(nodeDrain.Spec.NodeName)
 		if pendingList != nil {
-			nodeDrain.Status.PendingPods = GetPodNameList(pendingList.Pods())
+			nodeDrain.Status.PendingEvictionPods = GetPodNameList(pendingList.Pods())
 			if nodeDrain.Status.EvictionPodCount != 0 {
-				nodeDrain.Status.DrainProgress = (nodeDrain.Status.EvictionPodCount - len(nodeDrain.Status.PendingPods)) * 100 / nodeDrain.Status.EvictionPodCount
+				nodeDrain.Status.DrainProgress = (nodeDrain.Status.EvictionPodCount - len(nodeDrain.Status.PendingEvictionPods)) * 100 / nodeDrain.Status.EvictionPodCount
 			}
 		}
 	}
