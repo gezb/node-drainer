@@ -10,7 +10,7 @@ import (
 const (
 	K3S_IMAGE    = "rancher/k3s:v1.34.3-k3s1"
 	CLUSTER_NAME = "nd-e2e"
-	AGENTS       = "4"
+	AGENTS       = "5" // 1 to run the controller, prometheus etc, 4 to test with
 )
 
 // Runs the End-to-End Test in a local Kind Cluster

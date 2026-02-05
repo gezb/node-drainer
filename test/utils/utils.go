@@ -277,7 +277,7 @@ func DeleteDrainCheck(drainCheckName string) {
 }
 
 // creates and applies a NodeDrain resource for the given node
-func ApplyNodeDrain(nodeName string, waitForPodToRestart bool, versionToDrainRegex string, role string) {
+func ApplyNodeDrain(nodeCount int, nodeName string, waitForPodToRestart bool, versionToDrainRegex string, role string) {
 	By("Creating NodeDrain for node :" + nodeName)
 
 	nodeDrain := fmt.Sprintf(`
@@ -286,11 +286,12 @@ kind: NodeDrain
 metadata:
   name: %s
 spec:
+  numberOfNodes: %d
   nodeName: %s
   versionToDrainRegex: %s
   nodeRole: %s
   skipWaitForPodsToRestart: %t
-`, nodeName, nodeName, versionToDrainRegex, role, !waitForPodToRestart)
+`, nodeName, nodeCount, nodeName, versionToDrainRegex, role, !waitForPodToRestart)
 
 	nodeDrainFile, err := CreateTempFile(nodeDrain)
 	Expect(err).NotTo(HaveOccurred(), "Failed creating NodeDrain file to apply: "+nodeDrainFile)
@@ -320,7 +321,7 @@ func ExpectNumberOfPodsRunning(nodes []string, expected int) {
 		}
 		g.ExpectWithOffset(1, numberOfPods).To(Equal(expected))
 	}
-	EventuallyWithOffset(1, verifyAllPodsRunning, time.Minute).Should(Succeed())
+	EventuallyWithOffset(1, verifyAllPodsRunning).Should(Succeed())
 }
 
 // GePodsForNode returns the list of pods running on a given node

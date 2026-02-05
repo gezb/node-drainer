@@ -54,6 +54,9 @@ spec:
               nodeRole:
                 description: NodeRole is the nodes expected "role" label
                 type: string
+              numberOfNodes:
+                description: NumberOfNodes is the expected number of nodes to be drained
+                type: integer
               skipWaitForPodsToRestart:
                 description: WaitForPods waits for the evicted pods to be running
                   again before completing
@@ -65,6 +68,7 @@ spec:
             required:
             - nodeName
             - nodeRole
+            - numberOfNodes
             - skipWaitForPodsToRestart
             - versionToDrainRegex
             type: object
@@ -102,6 +106,9 @@ spec:
                 description: The last time the status has been updated
                 format: date-time
                 type: string
+              nodeDrainCount:
+                description: The number of NodeDrains discoverd
+                type: integer
               phase:
                 description: Phase represents the progress of this nodeDrain
                 type: string
@@ -126,6 +133,7 @@ spec:
                 type: integer
             required:
             - evictionPods
+            - nodeDrainCount
             - phase
             type: object
         type: object

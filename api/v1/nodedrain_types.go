@@ -13,6 +13,7 @@ const (
 	NodeDrainAnnotation string = "co.uk.gezb.node-restart-controller"
 
 	NodeDrainPhasePending               NodeDrainPhase = "Pending"
+	NodeDrainPhaseWaitingForNodes       NodeDrainPhase = "WaitingForNodes"
 	NodeDrainPhaseCordoned              NodeDrainPhase = "Cordoned"
 	NodeDrainPhaseDraining              NodeDrainPhase = "Draining"
 	NodeDrainPhaseCompleted             NodeDrainPhase = "Completed"
@@ -29,6 +30,8 @@ type NamespaceAndName struct {
 
 // NodeDrainSpec defines the desired state of NodeDrain.
 type NodeDrainSpec struct {
+	// NumberOfNodes is the expected number of nodes to be drained
+	NumberOfNodes int `json:"numberOfNodes"`
 	// NodeName is the name of the node to drain
 	NodeName string `json:"nodeName"`
 	// VersionToDrainRegex is a regex to match the expected kubernetes version that we want to Drain
@@ -44,6 +47,8 @@ type NodeDrainStatus struct {
 	// Phase represents the progress of this nodeDrain
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Phase NodeDrainPhase `json:"phase"`
+	// The number of NodeDrains discovered
+	NodeDrainCount int `json:"nodeDrainCount"`
 	// The last time the status has been updated
 	LastUpdate metav1.Time `json:"lastUpdate,omitempty"`
 	// LastError represents the latest error if any in the latest reconciliation
