@@ -24,14 +24,17 @@ const K8sVersionRegex = "^v1\\.34\\..*$"
 // k8sKubeconfig is the path to the kubeconfig file used for e2e testing
 const k8sKubeconfig = "/tmp/nd-e2e-kubeconfig.yaml"
 
-// worker2Node is the name of the node reserved for drain testing
-const worker2Node = "k3d-nd-e2e-agent-1"
+// worker1Node is the name of the node reserved for drain testing
+const worker1Node = "k3d-nd-e2e-agent-1"
+
+// worker2Node is the name of the node reserved for further testing
+const worker2Node = "k3d-nd-e2e-agent-2"
 
 // worker3Node is the name of the node reserved for further testing
-const worker3Node = "k3d-nd-e2e-agent-2"
+const worker3Node = "k3d-nd-e2e-agent-3"
 
 // worker4Node is the name of the node reserved for further testing
-const worker4Node = "k3d-nd-e2e-agent-3"
+const worker4Node = "k3d-nd-e2e-agent-4"
 
 var (
 	// Optional Environment Variables:
@@ -50,7 +53,7 @@ var (
 	// with the code source changes to be tested.
 	projectImage = "node-drain-controller:e2e-tests"
 	// testNodes is an array of the nodes that are reserved for drain testing
-	testNodes = []string{worker2Node, worker3Node, worker4Node}
+	testNodes = []string{worker1Node, worker2Node, worker3Node, worker4Node}
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -70,7 +73,11 @@ var _ = BeforeSuite(func() {
 
 	By("Labeling and cordening the test nodes so only our workloads run on them")
 
-	// worker2
+	// worker 1
+	utils.LabelNode(worker1Node, k8sRole)
+	utils.CordonNode(worker1Node)
+
+	// worker 2
 	utils.LabelNode(worker2Node, k8sRole)
 	utils.CordonNode(worker2Node)
 
@@ -83,7 +90,7 @@ var _ = BeforeSuite(func() {
 	utils.CordonNode(worker4Node)
 
 	By("Draining the test nodes to ensure a clean state")
-	utils.DrainNodes([]string{worker2Node, worker3Node, worker4Node})
+	utils.DrainNodes([]string{worker1Node, worker2Node, worker3Node, worker4Node})
 
 	By("Ensure that Prometheus is enabled")
 	_ = utils.UncommentCode("config/default/kustomization.yaml", "#- ../prometheus", "#")

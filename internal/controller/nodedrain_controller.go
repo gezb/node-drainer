@@ -89,7 +89,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	} else {
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(nodeDrain, gezbcoukalphav1.NodeDrainFinalizer) {
-			//	Remove annotation
+			//	Remove annotation if node is found
 			drainer, err := createDrainer(ctx, r.MgrConfig)
 			if err != nil {
 				return ctrl.Result{Requeue: true}, err
@@ -134,24 +134,26 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
-	needUpdate := false
+	needsUpdate := false
 	drainError := false
 	needsRequeue := false
 	// switch on status
 	switch nodeDrain.Status.Phase {
 	case gezbcoukalphav1.NodeDrainPhasePending:
-		needsRequeue, needUpdate, err = r.reconcilePending(ctx, drainer, nodeDrain)
+		needsUpdate, needsRequeue, err = r.reconcilePending(ctx, drainer, nodeDrain)
+	case gezbcoukalphav1.NodeDrainPhaseWaitingForNodes:
+		needsUpdate, needsRequeue, err = r.reconcileWaitingForNodes(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseCordoned:
-		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
+		needsUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhasePodsBlocking:
-		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
+		needsUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseOtherNodesNotCordoned:
-		needUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
+		needsUpdate, needsRequeue, err = r.reconcileCordoned(ctx, drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseDraining:
-		needUpdate = true
+		needsUpdate = true
 		needsRequeue, drainError, err = r.reconcileDraining(drainer, nodeDrain)
 	case gezbcoukalphav1.NodeDrainPhaseWaitForPodsToRestart:
-		needUpdate = true
+		needsUpdate = true
 		needsRequeue = true
 		err = r.reconcileWaitForPodsToRestart(ctx, drainer, nodeDrain)
 	}
@@ -164,7 +166,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.onReconcileError(ctx, drainer, nodeDrain, err)
 	}
 
-	if needUpdate {
+	if needsUpdate {
 		newStatus := nodeDrain.Status.DeepCopy()
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			// Fetch the latest version of NodeDrain before attempting update
@@ -186,7 +188,7 @@ func (r *NodeDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-// reconcilePending checks the node exists, cordens the node if it needs to and updated
+// reconcilePending checks the node exists and has the right details
 func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
 	nodeName := nodeDrain.Spec.NodeName
 	node, err := r.fetchNode(ctx, drainer, nodeName)
@@ -196,10 +198,10 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 			message := fmt.Sprintf("Node: %s not found", nodeName)
 			publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 			setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-			return false, true, nil
+			return true, false, nil
 		} else {
-			r.logger.Error(err, "Unexpected error for the NodeName field", "NodeName", nodeName)
-			return true, false, err
+			r.logger.Error(err, "Unexpected error getting node", "NodeName", nodeName)
+			return false, true, err
 		}
 	}
 
@@ -208,7 +210,7 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		r.logger.Info(message)
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-		return false, true, nil
+		return true, false, nil
 	}
 
 	pattern := regexp.MustCompile(nodeDrain.Spec.VersionToDrainRegex)
@@ -217,15 +219,39 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		r.logger.Info(message)
 		publishEvent(r.Recorder, nodeDrain, corev1.EventTypeWarning, events.EventReasonNodeNotFound, message)
 		setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseFailed)
-		return false, true, nil
+		return true, false, nil
 	}
 
 	// Add Annotation
 	metav1.SetMetaDataAnnotation(&node.ObjectMeta, gezbcoukalphav1.NodeDrainAnnotation, "true")
 	if err := r.Update(ctx, node); err != nil {
-		return true, false, err
+		return false, true, err
+	}
+	r.logger.Info(fmt.Sprintf("Node %s registered for Draining - waiting for others", nodeName))
+
+	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseWaitingForNodes)
+	return true, false, nil
+}
+
+// reconcileWaitingForNodes checks the node exists and has the right details
+func (r *NodeDrainReconciler) reconcileWaitingForNodes(ctx context.Context, drainer *drain.Helper, nodeDrain *gezbcoukalphav1.NodeDrain) (bool, bool, error) {
+	count, err := r.getNodeDrains(ctx, nodeDrain.Spec.VersionToDrainRegex, nodeDrain.Spec.NodeRole)
+	if err != nil {
+		return false, true, err
 	}
 
+	needUpdate := nodeDrain.Status.NodeDrainCount != count
+	nodeDrain.Status.NodeDrainCount = count
+	if count != nodeDrain.Spec.NumberOfNodes {
+		return needUpdate, true, nil
+	}
+
+	nodeName := nodeDrain.Spec.NodeName
+	node, err := r.fetchNode(ctx, drainer, nodeName)
+	if err != nil {
+		r.logger.Error(err, "Unexpected error getting node", "NodeName", nodeName)
+		return false, true, err
+	}
 	if !node.Spec.Unschedulable {
 		// cordon node
 		r.logger.Info("Cordoning node", "node", nodeName)
@@ -234,23 +260,24 @@ func (r *NodeDrainReconciler) reconcilePending(ctx context.Context, drainer *dra
 		}
 	}
 
+	// Get a list of pods on this node
 	podlist, err := drainer.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx,
 		metav1.ListOptions{
 			FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeDrain.Spec.NodeName}).String(),
 		})
 	if err != nil {
-		return true, false, err
+		return false, true, err
 	}
 	nodeDrain.Status.TotalPods = len(podlist.Items)
 
 	err = r.updatePendingPodCount(drainer, nodeDrain)
 	if err != nil {
-		return false, false, err
+		return false, true, err
 	}
 	nodeDrain.Status.EvictionPodCount = len(nodeDrain.Status.PendingEvictionPods)
 	setStatus(r.Recorder, nodeDrain, gezbcoukalphav1.NodeDrainPhaseCordoned)
 
-	return false, true, nil
+	return true, false, nil
 }
 
 // reconcileCordoned Checks that no pods exist that block draining this node & Checks all nodes for this k8s version&role are cordened,
@@ -377,6 +404,26 @@ func (r *NodeDrainReconciler) reconcileWaitForPodsToRestart(ctx context.Context,
 		return nil
 	}
 	return nil
+}
+
+func (r *NodeDrainReconciler) getNodeDrains(ctx context.Context, versionRegex string, role string) (int, error) {
+	count := 0
+	// get a list of NodeDrains
+	nodeDrainList := &gezbcoukalphav1.NodeDrainList{}
+	err := r.List(ctx, nodeDrainList, &client.ListOptions{})
+	if err != nil {
+		return count, err
+	}
+
+	for _, nodeDrain := range nodeDrainList.Items {
+		if nodeDrain.Spec.VersionToDrainRegex == versionRegex &&
+			nodeDrain.Spec.NodeRole == role &&
+			nodeDrain.Status.Phase != "Pending" &&
+			nodeDrain.Status.Phase != "Failed" {
+			count++
+		}
+	}
+	return count, err
 }
 
 func (r *NodeDrainReconciler) getBlockingPods(ctx context.Context, nodeDrain *gezbcoukalphav1.NodeDrain) ([]string, error) {
